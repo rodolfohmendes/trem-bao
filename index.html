@@ -89,6 +89,8 @@
     background:rgba(255,255,255,.18);border:none;border-radius:10px;padding:7px 8px;outline:none;cursor:pointer;
   }
   select option{color:var(--ink)}
+  #redModeSeg button{color:var(--terra-dark);opacity:.75}
+  #redModeSeg button.on{background:#fff;color:var(--terra-dark);opacity:1}
   .linkbtn{background:transparent;color:#fff;font-size:12px;font-weight:600;opacity:.85;text-decoration:underline;padding:6px 4px}
   .linkbtn:hover{opacity:1}
 
@@ -281,6 +283,13 @@
       engole o <b>-r final</b> (falá, comê, doutô), gerúndio vira <b>-no</b> (fazeno, andano), <b>lh vira i</b> (véio, trabaio, muié),
       <b>-inho vira -im</b> (pertim, cafezim), <b>cê</b>, <b>tá</b>, <b>num</b>, <b>memo</b>, <b>pruquê</b>, plural só no artigo (os menino)...
       Cola um texto e vê ele encolher, uai. Depois dá pra contar os tokens de verdade pra medir a economia.
+      <br><br>
+      <b>🎤 Sotaque completo</b> aplica tudo (mineirice máxima, mas grafia rara pode <i>gastar mais</i> token).
+      <b>🪙 Economia de tokens</b> aplica só as reduções que o tokenizador já conhece de cor ("pra", "tá", "cê", "num", "né", "peraí") — essas encurtam de verdade.
+    </div>
+    <div class="seg" id="redModeSeg" style="align-self:flex-start;background:var(--terra-soft)">
+      <button data-rmode="full" class="on">🎤 Sotaque completo</button>
+      <button data-rmode="eco">🪙 Economia de tokens</button>
     </div>
     <textarea id="redInput" style="resize:vertical;min-height:74px;border:1.5px solid var(--line);border-radius:14px;padding:12px 14px;font-family:inherit;font-size:15px;color:var(--ink);background:#fff;outline:none" placeholder="Cola aqui o texto pra passar no motor, sô..."></textarea>
     <div class="calc-actions">
@@ -303,7 +312,7 @@
     <textarea id="input" rows="1" placeholder="Escreve seu trem aqui, sô..."></textarea>
     <button id="sendBtn" class="btn-primary">Mandar</button>
   </div>
-  <footer>Feito com carinho pela cultura mineira ❤️ · As respostas vão direto pra API do Google Gemini (plano gratuito, sujeito a limites diários) · <b>v4</b><span id="sessTok"></span></footer>
+  <footer>Feito com carinho pela cultura mineira ❤️ · As respostas vão direto pra API do Google Gemini (plano gratuito, sujeito a limites diários) · <b>v5</b><span id="sessTok"></span></footer>
 </section>
 
 <script>
@@ -878,8 +887,16 @@ calcInput.addEventListener("keydown", e => {
    MOTOR DE REDUÇÃO FONÉTICA MINEIRA — código puro, sem IA
    ===================================================================== */
 const redInput = $("redInput"), redBtn = $("redBtn"), redTokBtn = $("redTokBtn"),
-      redStatus = $("redStatus"), redOut = $("redOut");
-let lastRed = null, redBusy = false;
+      redStatus = $("redStatus"), redOut = $("redOut"), redModeSeg = $("redModeSeg");
+let lastRed = null, redBusy = false, redModoEco = false;
+
+redModeSeg.addEventListener("click", e => {
+  const btn = e.target.closest("button[data-rmode]");
+  if (!btn) return;
+  redModeSeg.querySelectorAll("button").forEach(b => b.classList.toggle("on", b === btn));
+  redModoEco = btn.dataset.rmode === "eco";
+  if (redInput.value.trim()) runReduzir(); // re-processa na hora ao trocar de modo
+});
 
 /* preserva a maiúscula inicial da palavra original */
 function cp(orig, novo){
@@ -893,46 +910,53 @@ const GERUNDIO_NAO = ["quando","bando","lindo","brando","comando","quilando"];
 
 /* As regras rodam NESTA ordem — expressões primeiro, fonética geral depois.
    ATENÇÃO: nada de \b aqui — em JS, \b falha ao lado de letra acentuada (você, está, aí).
-   Usamos lookarounds Unicode: (?<![\p{L}]) no começo e (?![\p{L}]) no fim. */
+   Usamos lookarounds Unicode: (?<![\p{L}]) no começo e (?![\p{L}]) no fim.
+
+   O 4º campo marca as regras do modo 🪙 ECONOMIA: só reduções que já são
+   frequentes na escrita informal brasileira — o tokenizador conhece "pra",
+   "tá", "cê", "num", "né" de cor (1 token), mas grafia rara tipo "fazeno"
+   ele pica em pedaços e sai MAIS caro. */
 const REGRAS = [
-  ["peraí & cia",       /(?<![\p{L}])espera\s+a[íi](?![\p{L}])/giu,   m => cp(m, "peraí")],
-  ["peraí & cia",       /(?<![\p{L}])vamos\s+embora(?![\p{L}])/giu,   m => cp(m, "vambora")],
-  ["peraí & cia",       /(?<![\p{L}])deixa\s+eu(?![\p{L}])/giu,       m => cp(m, "xô")],
-  ["peraí & cia",       /(?<![\p{L}])com\s+você(?![\p{L}])/giu,       m => cp(m, "cocê")],
-  ["peraí & cia",       /(?<![\p{L}])olha,/giu,                       m => cp(m, "ó,")],
-  ["mió & pió",         /(?<![\p{L}])melhor(?:es)?(?![\p{L}])/giu,    m => cp(m, "mió")],
-  ["mió & pió",         /(?<![\p{L}])pior(?:es)?(?![\p{L}])/giu,      m => cp(m, "pió")],
-  ["memo",              /(?<![\p{L}])mesm([oa]s?)(?![\p{L}])/giu,     (m,s) => cp(m, "mem" + s.toLowerCase())],
-  ["pruquê",            /(?<![\p{L}])por\s*qu[eê](?![\p{L}])/giu,     m => cp(m, "pruquê")],
-  ["cê & ocê",          /(?<![\p{L}])vocês(?![\p{L}])/giu,            m => cp(m, "cês")],
-  ["cê & ocê",          /(?<![\p{L}])você(?![\p{L}])/giu,             m => cp(m, "cê")],
-  ["tá & tô",           /(?<![\p{L}])está(?![\p{L}])/giu,             m => cp(m, "tá")],
-  ["tá & tô",           /(?<![\p{L}])estão(?![\p{L}])/giu,            m => cp(m, "tão")],
-  ["tá & tô",           /(?<![\p{L}])estou(?![\p{L}])/giu,            m => cp(m, "tô")],
-  ["tá & tô",           /(?<![\p{L}])estava(m|mos)?(?![\p{L}])/giu,   (m,s) => cp(m, "tava" + (s || "").toLowerCase())],
-  ["tá & tô",           /(?<![\p{L}])estamos(?![\p{L}])/giu,          m => cp(m, "tamo")],
-  ["tá & tô",           /(?<![\p{L}])estar(?![\p{L}])/giu,            m => cp(m, "tá")],
-  ["vamo",              /(?<![\p{L}])vamos(?![\p{L}])/giu,            m => cp(m, "vamo")],
-  ["pera",              /(?<![\p{L}])espera(?![\p{L}])/giu,           m => cp(m, "pera")],
-  ["num",               /(?<![\p{L}])não(?=\s+[\p{L}])/giu,           m => cp(m, "num")],
-  ["pra & pro",         /(?<![\p{L}])para\s+o(s?)(?![\p{L}])/giu,     (m,s) => cp(m, "pro" + s)],
-  ["pra & pro",         /(?<![\p{L}])para\s+a(s?)(?![\p{L}])/giu,     (m,s) => cp(m, "pra" + s)],
-  ["pra & pro",         /(?<![\p{L}])para(?![\p{L}])/giu,             m => cp(m, "pra")],
-  ["muié & cuié",       /(?<![\p{L}])mulher(?:es)?(?![\p{L}])/giu,    m => cp(m, "muié")],
-  ["muié & cuié",       /(?<![\p{L}])colher(?:es)?(?![\p{L}])/giu,    m => cp(m, "cuié")],
-  ["-inho vira -im",    /(?<![\p{L}])([\p{L}]{2,})inhos?(?![\p{L}])/giu, (m,base) => cp(m, base + "im")],
-  ["lh vira i",         /([\p{L}]{2,})lh(a|e|i)(?=r(?![\p{L}])|ndo(?![\p{L}])|d[oa]s?(?![\p{L}]))/giu, (m,pre,v) => pre + "i" + v],
-  ["lh vira i",         /(?<![\p{L}])([\p{L}]+)ilh([oa]s?)(?![\p{L}])/giu, (m,pre,fim) => cp(m, pre + "i" + fim.toLowerCase())],
-  ["lh vira i",         /(?<![\p{L}])([\p{L}]{2,})lh([oa]s?)(?![\p{L}])/giu, (m,pre,fim) => cp(m, pre + "i" + fim.toLowerCase())],
-  ["plural no artigo",  /(?<![\p{L}])(os|as|uns|umas|meus|minhas|seus|suas|esses|essas|aqueles|aquelas|dois|duas|três)\s+([\p{L}]{3,}?)s(?![\p{L}])/giu, (m,art,n) => art + " " + n],
-  ["gerúndio -no",      /(?<![\p{L}])([\p{L}]{1,}[aei])ndo(?![\p{L}])/giu, (m,base) => GERUNDIO_NAO.indexOf(m.toLowerCase()) >= 0 ? m : cp(m, base + "no")],
-  ["r final engolido",  /(?<![\p{L}])([\p{L}]{2,})([aeiou])r(?![\p{L}])/giu, (m,stem,v) => cp(m, stem + ACENTO[v.toLowerCase()])]
+  ["peraí & cia",       /(?<![\p{L}])espera\s+a[íi](?![\p{L}])/giu,   m => cp(m, "peraí"), true],
+  ["peraí & cia",       /(?<![\p{L}])vamos\s+embora(?![\p{L}])/giu,   m => cp(m, "vambora"), false],
+  ["peraí & cia",       /(?<![\p{L}])deixa\s+eu(?![\p{L}])/giu,       m => cp(m, "xô"), false],
+  ["peraí & cia",       /(?<![\p{L}])com\s+você(?![\p{L}])/giu,       m => cp(m, "cocê"), false],
+  ["peraí & cia",       /(?<![\p{L}])olha,/giu,                       m => cp(m, "ó,"), false],
+  ["né",                /(?<![\p{L}])não\s+é\s*\?/giu,                m => cp(m, "né?"), true],
+  ["mió & pió",         /(?<![\p{L}])melhor(?:es)?(?![\p{L}])/giu,    m => cp(m, "mió"), false],
+  ["mió & pió",         /(?<![\p{L}])pior(?:es)?(?![\p{L}])/giu,      m => cp(m, "pió"), false],
+  ["memo",              /(?<![\p{L}])mesm([oa]s?)(?![\p{L}])/giu,     (m,s) => cp(m, "mem" + s.toLowerCase()), false],
+  ["pruquê",            /(?<![\p{L}])por\s*qu[eê](?![\p{L}])/giu,     m => cp(m, "pruquê"), false],
+  ["cê & ocê",          /(?<![\p{L}])vocês(?![\p{L}])/giu,            m => cp(m, "cês"), true],
+  ["cê & ocê",          /(?<![\p{L}])você(?![\p{L}])/giu,             m => cp(m, "cê"), true],
+  ["tá & tô",           /(?<![\p{L}])está(?![\p{L}])/giu,             m => cp(m, "tá"), true],
+  ["tá & tô",           /(?<![\p{L}])estão(?![\p{L}])/giu,            m => cp(m, "tão"), true],
+  ["tá & tô",           /(?<![\p{L}])estou(?![\p{L}])/giu,            m => cp(m, "tô"), true],
+  ["tá & tô",           /(?<![\p{L}])estava(m|mos)?(?![\p{L}])/giu,   (m,s) => cp(m, "tava" + (s || "").toLowerCase()), true],
+  ["tá & tô",           /(?<![\p{L}])estamos(?![\p{L}])/giu,          m => cp(m, "tamo"), true],
+  ["tá & tô",           /(?<![\p{L}])estar(?![\p{L}])/giu,            m => cp(m, "tá"), true],
+  ["vamo",              /(?<![\p{L}])vamos(?![\p{L}])/giu,            m => cp(m, "vamo"), true],
+  ["pera",              /(?<![\p{L}])espera(?![\p{L}])/giu,           m => cp(m, "pera"), false],
+  ["num",               /(?<![\p{L}])não(?=\s+[\p{L}])/giu,           m => cp(m, "num"), true],
+  ["pra & pro",         /(?<![\p{L}])para\s+o(s?)(?![\p{L}])/giu,     (m,s) => cp(m, "pro" + s), true],
+  ["pra & pro",         /(?<![\p{L}])para\s+a(s?)(?![\p{L}])/giu,     (m,s) => cp(m, "pra" + s), true],
+  ["pra & pro",         /(?<![\p{L}])para(?![\p{L}])/giu,             m => cp(m, "pra"), true],
+  ["muié & cuié",       /(?<![\p{L}])mulher(?:es)?(?![\p{L}])/giu,    m => cp(m, "muié"), false],
+  ["muié & cuié",       /(?<![\p{L}])colher(?:es)?(?![\p{L}])/giu,    m => cp(m, "cuié"), false],
+  ["-inho vira -im",    /(?<![\p{L}])([\p{L}]{2,})inhos?(?![\p{L}])/giu, (m,base) => cp(m, base + "im"), false],
+  ["lh vira i",         /([\p{L}]{2,})lh(a|e|i)(?=r(?![\p{L}])|ndo(?![\p{L}])|d[oa]s?(?![\p{L}]))/giu, (m,pre,v) => pre + "i" + v, false],
+  ["lh vira i",         /(?<![\p{L}])([\p{L}]+)ilh([oa]s?)(?![\p{L}])/giu, (m,pre,fim) => cp(m, pre + "i" + fim.toLowerCase()), false],
+  ["lh vira i",         /(?<![\p{L}])([\p{L}]{2,})lh([oa]s?)(?![\p{L}])/giu, (m,pre,fim) => cp(m, pre + "i" + fim.toLowerCase()), false],
+  ["plural no artigo",  /(?<![\p{L}])(os|as|uns|umas|meus|minhas|seus|suas|esses|essas|aqueles|aquelas|dois|duas|três)\s+([\p{L}]{3,}?)s(?![\p{L}])/giu, (m,art,n) => art + " " + n, true],
+  ["gerúndio -no",      /(?<![\p{L}])([\p{L}]{1,}[aei])ndo(?![\p{L}])/giu, (m,base) => GERUNDIO_NAO.indexOf(m.toLowerCase()) >= 0 ? m : cp(m, base + "no"), false],
+  ["r final engolido",  /(?<![\p{L}])([\p{L}]{2,})([aeiou])r(?![\p{L}])/giu, (m,stem,v) => cp(m, stem + ACENTO[v.toLowerCase()]), false]
 ];
 
-function reduzir(texto){
+function reduzir(texto, soEconomia){
   const aplicadas = new Map();
   let out = texto;
-  for (const [nome, re, f] of REGRAS){
+  for (const [nome, re, f, eco] of REGRAS){
+    if (soEconomia && !eco) continue;
     out = out.replace(re, (...args) => {
       const res = f(...args);
       if (res !== args[0]) aplicadas.set(nome, (aplicadas.get(nome) || 0) + 1);
@@ -947,7 +971,7 @@ const EXEMPLO_RED = "Olha, você está falando demais! Espera aí, que os menino
 function runReduzir(){
   const t = redInput.value.trim();
   if (!t) return;
-  const r = reduzir(t);
+  const r = reduzir(t, redModoEco);
   lastRed = { antes: t, depois: r.texto };
   const dChars = economia(r.texto.length, t.length);
 
@@ -955,7 +979,7 @@ function runReduzir(){
   html += '<div class="duel-card padrao"><div class="duel-title">📜 Original</div>' +
           '<div class="tokrow"><span><b>' + t.length + '</b> caracteres</span></div>' +
           '<div class="duel-text">' + escapeHtml(t) + '</div></div>';
-  html += '<div class="duel-card mine"><div class="duel-title">🧀 Reduzido no motor</div>' +
+  html += '<div class="duel-card mine"><div class="duel-title">' + (redModoEco ? '🪙 Reduzido (modo economia)' : '🧀 Reduzido (sotaque completo)') + '</div>' +
           '<div class="tokrow"><span><b>' + r.texto.length + '</b> caracteres (' + (dChars >= 0 ? "−" + dChars : "+" + (-dChars)) + '%)</span>' +
           '<button class="linkbtn" id="redCopy" style="color:var(--terra);opacity:1;text-decoration:underline">copiar</button></div>' +
           '<div class="duel-text">' + escapeHtml(r.texto) + '</div></div>';
