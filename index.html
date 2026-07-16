@@ -1,0 +1,825 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trem Bão — Chat em Mineirês</title>
+<style>
+  :root{
+    --cream:#f7efe1;
+    --card:#fffaf0;
+    --ink:#3c2a1a;
+    --ink-soft:#7a604a;
+    --terra:#b5541c;
+    --terra-dark:#934315;
+    --terra-soft:#f3ddc9;
+    --green:#3f6b42;
+    --line:#e8d9c2;
+    --shadow:0 10px 30px rgba(60,42,26,.10);
+    --radius:18px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    font-family:"Segoe UI",-apple-system,BlinkMacSystemFont,Roboto,"Helvetica Neue",Arial,sans-serif;
+    background:
+      radial-gradient(1200px 500px at 80% -10%, #f0e0c6 0%, transparent 60%),
+      radial-gradient(900px 420px at -10% 110%, #efdfc5 0%, transparent 55%),
+      var(--cream);
+    color:var(--ink);
+    display:flex;align-items:center;justify-content:center;
+  }
+  .hidden{display:none !important}
+
+  /* ---------- Tela de configuração ---------- */
+  #setup{
+    width:min(560px,94vw);
+    background:var(--card);
+    border:1px solid var(--line);
+    border-radius:var(--radius);
+    box-shadow:var(--shadow);
+    padding:34px 34px 28px;
+  }
+  .logo{font-size:44px;line-height:1}
+  #setup h1{font-size:30px;margin:10px 0 4px;letter-spacing:.2px}
+  #setup h1 em{color:var(--terra);font-style:normal}
+  .tagline{color:var(--ink-soft);margin-bottom:22px;font-size:15px}
+  .steps{background:#fdf6e9;border:1px dashed var(--line);border-radius:14px;padding:16px 18px;margin-bottom:20px;font-size:14.5px}
+  .steps b{color:var(--terra-dark)}
+  .steps ol{margin-left:20px;display:grid;gap:8px;margin-top:8px}
+  .steps a{color:var(--terra);font-weight:600;text-decoration:none;border-bottom:1px dotted var(--terra)}
+  label{font-size:13px;font-weight:700;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.6px}
+  .keyrow{display:flex;gap:10px;margin-top:8px}
+  input[type=password],input[type=text]{
+    flex:1;padding:13px 14px;border:1.5px solid var(--line);border-radius:12px;
+    font-size:15px;background:#fff;color:var(--ink);outline:none;
+  }
+  input:focus{border-color:var(--terra)}
+  button{
+    font-family:inherit;border:none;cursor:pointer;border-radius:12px;
+    font-size:15px;font-weight:700;transition:transform .06s ease, background .15s ease;
+  }
+  button:active{transform:scale(.97)}
+  .btn-primary{background:var(--terra);color:#fff;padding:13px 20px}
+  .btn-primary:hover{background:var(--terra-dark)}
+  .btn-primary:disabled{opacity:.55;cursor:wait}
+  .privacy{font-size:12.5px;color:var(--ink-soft);margin-top:14px;line-height:1.5}
+  #setupError{margin-top:12px;color:#a03018;background:#fbe9e2;border:1px solid #efc9ba;border-radius:10px;padding:10px 12px;font-size:14px}
+
+  /* ---------- App de chat ---------- */
+  #app{
+    width:min(760px,96vw);height:min(92vh,860px);
+    background:var(--card);border:1px solid var(--line);
+    border-radius:var(--radius);box-shadow:var(--shadow);
+    display:flex;flex-direction:column;overflow:hidden;
+  }
+  header{
+    background:linear-gradient(120deg,var(--terra) 0%,#c96a2c 60%,#d0803f 100%);
+    color:#fff;padding:14px 20px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+  }
+  header .hlogo{font-size:28px}
+  header .htitle{font-weight:800;font-size:19px;letter-spacing:.3px}
+  header .hsub{font-size:12px;opacity:.9;margin-top:1px}
+  .spacer{flex:1}
+  .seg{display:flex;background:rgba(255,255,255,.18);border-radius:10px;padding:3px;gap:2px}
+  .seg button{background:transparent;color:#fff;font-size:12.5px;font-weight:700;padding:6px 11px;border-radius:8px}
+  .seg button.on{background:#fff;color:var(--terra-dark)}
+  select{
+    font-family:inherit;font-size:12.5px;font-weight:600;color:#fff;
+    background:rgba(255,255,255,.18);border:none;border-radius:10px;padding:7px 8px;outline:none;cursor:pointer;
+  }
+  select option{color:var(--ink)}
+  .linkbtn{background:transparent;color:#fff;font-size:12px;font-weight:600;opacity:.85;text-decoration:underline;padding:6px 4px}
+  .linkbtn:hover{opacity:1}
+
+  #chat{flex:1;overflow-y:auto;padding:22px 20px 10px;display:flex;flex-direction:column;gap:14px;scroll-behavior:smooth}
+  .msg{display:flex;gap:10px;max-width:86%}
+  .msg .avatar{font-size:22px;flex:0 0 auto;margin-top:2px}
+  .bubble{
+    padding:12px 15px;border-radius:16px;font-size:15px;line-height:1.55;
+    white-space:normal;word-wrap:break-word;overflow-wrap:anywhere;
+  }
+  .msg.bot{align-self:flex-start}
+  .msg.bot .bubble{background:#fdf4e4;border:1px solid var(--line);border-top-left-radius:6px}
+  .msg.user{align-self:flex-end;flex-direction:row-reverse}
+  .msg.user .bubble{background:var(--terra);color:#fff;border-top-right-radius:6px}
+  .msg.err .bubble{background:#fbe9e2;border:1px solid #efc9ba;color:#7c2a12}
+  .bubble p{margin:0 0 8px}
+  .bubble p:last-child{margin-bottom:0}
+  .bubble ul,.bubble ol{margin:4px 0 8px 20px;display:grid;gap:4px}
+  .bubble code{background:rgba(60,42,26,.09);padding:1px 5px;border-radius:5px;font-size:13.5px;font-family:ui-monospace,Consolas,Menlo,monospace}
+  .msg.user .bubble code{background:rgba(255,255,255,.22)}
+  .bubble pre{background:#33241a;color:#f7e8d2;padding:12px 14px;border-radius:10px;overflow-x:auto;margin:6px 0 8px}
+  .bubble pre code{background:transparent;padding:0;color:inherit;font-size:13px}
+  .bubble strong{font-weight:800}
+
+  .typing{display:flex;align-items:center;gap:8px;color:var(--ink-soft);font-size:13.5px;font-style:italic}
+  .dots{display:inline-flex;gap:3px}
+  .dots span{width:6px;height:6px;border-radius:50%;background:var(--terra);opacity:.35;animation:blink 1.2s infinite}
+  .dots span:nth-child(2){animation-delay:.2s}
+  .dots span:nth-child(3){animation-delay:.4s}
+  @keyframes blink{0%,80%,100%{opacity:.25}40%{opacity:1}}
+
+  #chips{display:flex;flex-wrap:wrap;gap:8px;padding:0 20px 12px}
+  #chips button{
+    background:#fff;border:1.5px solid var(--line);color:var(--ink-soft);
+    font-size:13px;font-weight:600;padding:8px 13px;border-radius:999px;
+  }
+  #chips button:hover{border-color:var(--terra);color:var(--terra-dark)}
+
+  #composer{display:flex;gap:10px;padding:14px 16px;border-top:1px solid var(--line);background:#fffdf7}
+  #input{
+    flex:1;resize:none;border:1.5px solid var(--line);border-radius:14px;
+    padding:12px 14px;font-family:inherit;font-size:15px;color:var(--ink);
+    background:#fff;outline:none;max-height:130px;
+  }
+  #input:focus{border-color:var(--terra)}
+  #sendBtn{background:var(--terra);color:#fff;padding:0 22px;font-size:15px}
+  #sendBtn:hover{background:var(--terra-dark)}
+  #sendBtn:disabled{opacity:.55;cursor:wait}
+  footer{font-size:11px;color:var(--ink-soft);text-align:center;padding:7px 12px 10px;background:#fffdf7}
+
+  /* ---------- Calculadora de tokens ---------- */
+  #calc{flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:14px}
+  .calc-intro{background:#fdf6e9;border:1px dashed var(--line);border-radius:14px;padding:14px 16px;font-size:13.5px;color:var(--ink-soft);line-height:1.55}
+  .calc-intro b{color:var(--terra-dark)}
+  #calcInput{
+    resize:vertical;min-height:74px;border:1.5px solid var(--line);border-radius:14px;
+    padding:12px 14px;font-family:inherit;font-size:15px;color:var(--ink);background:#fff;outline:none;
+  }
+  #calcInput:focus{border-color:var(--terra)}
+  .calc-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  #calcBtn{background:var(--terra);color:#fff;padding:12px 20px}
+  #calcBtn:hover{background:var(--terra-dark)}
+  #calcBtn:disabled{opacity:.55;cursor:wait}
+  #calcStatus{font-size:13.5px;color:var(--ink-soft);font-style:italic}
+  .duel{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media (max-width:640px){.duel{grid-template-columns:1fr}}
+  .duel-card{background:#fff;border:1.5px solid var(--line);border-radius:14px;padding:14px 16px;display:flex;flex-direction:column;gap:8px}
+  .duel-card.win{border-color:var(--green);box-shadow:0 0 0 3px rgba(63,107,66,.12)}
+  .duel-title{font-weight:800;font-size:14px;display:flex;align-items:center;gap:6px}
+  .duel-text{font-size:13.5px;line-height:1.5;color:var(--ink);background:#fdf6e9;border-radius:10px;padding:10px 12px;max-height:180px;overflow-y:auto}
+  .duel-text p{margin:0 0 6px}
+  .duel-text p:last-child{margin-bottom:0}
+  .duel-text ul,.duel-text ol{margin:4px 0 6px 20px;display:grid;gap:3px}
+  .duel-text code{background:rgba(60,42,26,.09);padding:1px 5px;border-radius:5px;font-size:12.5px;font-family:ui-monospace,Consolas,Menlo,monospace}
+  .duel-text pre{background:#33241a;color:#f7e8d2;padding:10px 12px;border-radius:8px;overflow-x:auto;margin:6px 0}
+  .duel-text pre code{background:transparent;padding:0;color:inherit;font-size:12px}
+  .tokrow{display:flex;justify-content:space-between;font-size:12.5px;color:var(--ink-soft)}
+  .tokrow b{color:var(--ink);font-size:13px}
+  .tokbar{height:8px;border-radius:99px;background:var(--terra-soft);overflow:hidden}
+  .tokbar i{display:block;height:100%;background:var(--terra);border-radius:99px}
+  .duel-card.padrao .tokbar i{background:#8a7a63}
+  .verdict{
+    background:linear-gradient(120deg,#3f6b42,#548757);color:#fff;border-radius:14px;
+    padding:14px 18px;font-size:14.5px;line-height:1.55;
+  }
+  .verdict.lost{background:linear-gradient(120deg,#9c4a1f,#b5541c)}
+  .verdict b{font-size:16px}
+  .stat-pills{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+  .stat-pills span{background:rgba(255,255,255,.18);border-radius:99px;padding:4px 12px;font-size:12.5px;font-weight:700}
+  .calc-note{font-size:11.5px;color:var(--ink-soft);line-height:1.5}
+
+  @media (max-width:600px){
+    #app{height:100dvh;width:100vw;border-radius:0;border:none}
+    header .hsub{display:none}
+    .msg{max-width:94%}
+  }
+</style>
+</head>
+<body>
+
+<!-- ============ TELA 1: CONFIGURAÇÃO ============ -->
+<section id="setup">
+  <div class="logo">🧀☕</div>
+  <h1>Trem <em>Bão</em></h1>
+  <div class="tagline">Prosa fiada com inteligência artificial, no capricho de Minas Gerais.</div>
+
+  <div class="steps">
+    <b>Pra começar, cê precisa de uma chave gratuita do Google:</b>
+    <ol>
+      <li>Entra no <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a> (com sua conta Google);</li>
+      <li>Clica em <b>"Create API key"</b> — é de graça, num pede cartão não;</li>
+      <li>Copia a chave e cola aqui embaixo. Pronto, uai!</li>
+    </ol>
+  </div>
+
+  <label for="keyInput">Sua chave da API do Gemini</label>
+  <div class="keyrow">
+    <input id="keyInput" type="password" placeholder="AIza..." autocomplete="off" spellcheck="false">
+    <button id="startBtn" class="btn-primary">Começar a prosear</button>
+  </div>
+
+  <div id="setupError" class="hidden"></div>
+  <button id="backPublic" class="hidden" style="background:transparent;color:var(--terra);font-size:13.5px;font-weight:700;margin-top:12px;text-decoration:underline">← Voltar e usar sem chave (modo público)</button>
+
+  <div class="privacy">
+    🔒 Sua chave fica guardada <b>só na memória desta página</b> enquanto ela estiver aberta —
+    não é salva em lugar nenhum e só é enviada direto pro Google, mais ninguém.
+    Se recarregar a página, é só colar de novo.
+  </div>
+</section>
+
+<!-- ============ TELA 2: CHAT ============ -->
+<section id="app" class="hidden">
+  <header>
+    <div class="hlogo">🧀</div>
+    <div>
+      <div class="htitle">Trem Bão</div>
+      <div class="hsub">chat em mineirês</div>
+    </div>
+    <div class="spacer"></div>
+    <div class="seg" id="viewSeg" title="Modo do app">
+      <button data-view="chat" class="on">💬 Prosa</button>
+      <button data-view="calc">🔢 Calculadora</button>
+    </div>
+    <div class="seg" id="levelSeg" title="Nível de mineirice das respostas">
+      <button data-level="leve">Leve</button>
+      <button data-level="medio" class="on">Médio</button>
+      <button data-level="raiz">Raiz</button>
+    </div>
+    <select id="modelSel" title="Modelo do Gemini">
+      <option value="gemini-flash-latest">Flash (mais novo)</option>
+      <option value="gemini-3.5-flash">Gemini 3.5 Flash</option>
+      <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+      <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash Lite</option>
+    </select>
+    <button class="linkbtn" id="changeKey">trocar chave</button>
+  </header>
+
+  <div id="chat"></div>
+
+  <!-- ============ CALCULADORA DE TOKENS ============ -->
+  <div id="calc" class="hidden">
+    <div class="calc-intro">
+      <b>O experimento:</b> cê escreve uma pergunta e eu faço três coisas, tudo com a API oficial:
+      <b>1)</b> reescrevo ela em <b>português padrão</b> e em <b>mineirês raiz</b> e conto os tokens de cada versão
+      (endpoint <code>countTokens</code> — é o tokenizador de verdade do modelo);
+      <b>2)</b> mando a mesma pergunta pras duas personas responderem;
+      <b>3)</b> comparo os tokens de <b>entrada</b> e de <b>saída</b> (via <code>usageMetadata</code>) pra ver se o mineirês economiza ou gasta mais, uai.
+    </div>
+    <textarea id="calcInput" placeholder="Escreve uma pergunta ou texto pra comparar, sô... (ex.: Você poderia me explicar como funciona a fotossíntese?)"></textarea>
+    <div class="calc-actions">
+      <button id="calcBtn" class="btn-primary">⚖️ Comparar os dois trem</button>
+      <div id="calcStatus"></div>
+    </div>
+    <div id="calcResults"></div>
+    <div class="calc-note">
+      📏 Contagens feitas pelo tokenizador real do Gemini. A resposta de um LLM varia a cada rodada,
+      então o resultado da <i>saída</i> muda um cadim se cê rodar de novo — a <i>entrada</i> (texto reescrito) é comparação direta.
+      Tokens de raciocínio interno do modelo ficam de fora da conta, pra comparação ser justa.
+      Cada comparação usa 3 chamadas de geração + 2 de contagem do plano grátis.
+    </div>
+  </div>
+
+  <div id="chips">
+    <button>Uai, me explica o que é inteligência artificial</button>
+    <button>Me dá uma receita de pão de queijo</button>
+    <button>Como se fala "muito legal" em mineirês?</button>
+    <button>Me conta um causo do interior de Minas</button>
+  </div>
+
+  <div id="composer">
+    <textarea id="input" rows="1" placeholder="Escreve seu trem aqui, sô..."></textarea>
+    <button id="sendBtn" class="btn-primary">Mandar</button>
+  </div>
+  <footer>Feito com carinho pela cultura mineira ❤️ · As respostas vão direto pra API do Google Gemini (plano gratuito, sujeito a limites diários).<span id="sessTok"></span></footer>
+</section>
+
+<script>
+"use strict";
+
+/* =====================================================================
+   MODO PÚBLICO: cole aqui a URL do proxy (App da Web do Apps Script,
+   termina em /exec). Com a URL preenchida, visitantes usam o app SEM
+   chave — a chave fica em segredo no proxy, nunca nesta página.
+   Se ficar vazio (""), o app pede a chave de cada pessoa (modo pessoal).
+   ===================================================================== */
+const PROXY_URL = "https://script.google.com/macros/s/AKfycbwlVgpPL-BxZ1ifTj8e_XjLDrVU4clpjAs_ZWyzlJ12rl1XnvSZtAG0t7U0sdScwuLDwg/exec";
+
+/* =====================================================================
+   O CORAÇÃO DO APP: o "treinamento" do dialeto mineiro via system prompt
+   ===================================================================== */
+const PROMPT_BASE = `Você é o assistente "Trem Bão", um mineiro do interior de Minas Gerais: caloroso, hospitaleiro, prestativo e bom de prosa.
+
+REGRAS FUNDAMENTAIS:
+1. Responda SEMPRE em português brasileiro no dialeto mineiro ("mineirês"), no nível de intensidade indicado no fim deste prompt — mesmo que o usuário escreva em outra língua.
+2. O dialeto muda a FORMA, nunca o CONTEÚDO: as informações devem continuar corretas, completas e úteis. Pergunta técnica merece resposta tecnicamente precisa — só que contada do jeito mineiro.
+3. Seja acolhedor como um bom mineiro: receba bem, ofereça ajuda, puxe uma prosa leve. Sem exagerar nem enrolar — mineiro é econômico até nas palavras.
+4. O mineirês aqui é celebração carinhosa da cultura de Minas, nunca deboche ou caricatura ofensiva.
+5. Se o usuário pedir o significado de alguma palavra ou expressão mineira, explique com gosto.
+6. Código, comandos, fórmulas e termos técnicos ficam na forma padrão (nunca "traduza" código pra mineirês) — mas os comentários e explicações ao redor podem ser mineiríssimos.
+
+VOCABULÁRIO E TRAÇOS DO MINEIRÊS (use com naturalidade, sem forçar tudo de uma vez):
+- Marcadores: "uai" (espanto, ênfase, obviedade), "sô" (arremate de frase), "nu!" ou "nossa!" (admiração), "ô" (vocativo: "ô, moço").
+- "Trem" = qualquer coisa: "esse trem de API", "que trem bão", "cadê meus trem".
+- "Cê" / "ocê" no lugar de "você"; "num" no lugar de "não" antes de verbo ("num sei", "num dá").
+- Diminutivo em "-im": cafezim, pertim, rapidim, tiquim, cadim, quentim, docim.
+- Expressões: "demais da conta" (muito), "bão" (bom), "dar conta de" (conseguir), "mexer com" (trabalhar com), "prosear" (conversar), "custoso" (difícil, teimoso), "encafifado" (intrigado), "arredar" (mover), "de primeira" (excelente), "onde já se viu" (indignação leve).
+- Contrações da fala (só no nível raiz): "cê qué", "pó pô" (pode pôr), "quié" (o que é), "pra ocê", "tô", "tá", "vamo", "pões" (põe os).
+- Cultura pra ilustrar quando encaixar natural: café coado, pão de queijo, queijo minas, quitandas, doce de leite, fogão a lenha, as montanhas, contar "causo". Não precisa citar em toda mensagem.
+
+EXEMPLOS DE TOM (nível médio):
+Usuário: "O que é uma API?"
+Você: "Uai, API é que nem a janelinha da padaria, sô: cê num precisa entrar na cozinha pra pegar o pão de queijo — cê pede na janelinha e ela te entrega prontim. A API é essa janelinha entre dois programas: um pede, o outro entrega, sem ninguém precisar saber como a cozinha funciona por dentro. [e segue explicando direitim...]"
+
+Usuário: "Tô triste hoje."
+Você: "Ô, trem bão não, sô... Senta aqui um cadim e me conta o que houve. Às vezes só de prosear o coração já assenta, uai."
+
+NÍVEL DE MINEIRICE DESTA CONVERSA:
+`;
+
+const NIVEIS = {
+  leve:  `LEVE — Sotaque discreto: use "cê", "pra", um "uai" ou "sô" de vez em quando e um diminutivo aqui e ali. Escrita quase padrão, mas com o calor humano de Minas. Nada de contração pesada.`,
+  medio: `MÉDIO — Mineirês nítido: "uai", "sô", "trem", "bão", diminutivos em -im e expressões típicas aparecendo com frequência boa, mantendo a leitura fácil pra qualquer brasileiro.`,
+  raiz:  `RAIZ — Mineirês carregado, do fundo do quintal: contrações da fala ("cê qué", "num", "tô", "vamo"), "uai" e "sô" fartos, vocabulário regional à vontade, comparação com café, queijo e quitanda quando couber. Mesmo assim, a informação tem que continuar clara e completa, uai.`
+};
+
+/* ============================ Estado ============================ */
+const state = {
+  key: "",
+  ownKey: false,     // true = usuário optou por usar a própria chave (mesmo no modo público)
+  model: "gemini-flash-latest",
+  level: "medio",
+  history: [],       // [{role:'user'|'model', parts:[{text}]}]
+  busy: false
+};
+
+const API_BASE = "https://generativelanguage.googleapis.com/v1beta";
+const MAX_TURNS = 24; // limita o histórico enviado (economiza tokens do plano grátis)
+
+/* ============================ Elementos ============================ */
+const $ = (id) => document.getElementById(id);
+const setupEl = $("setup"), appEl = $("app"), chatEl = $("chat");
+const keyInput = $("keyInput"), startBtn = $("startBtn"), setupError = $("setupError");
+const inputEl = $("input"), sendBtn = $("sendBtn"), chipsEl = $("chips");
+const modelSel = $("modelSel"), levelSeg = $("levelSeg");
+
+/* ============================ Utilidades ============================ */
+function escapeHtml(s){
+  return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+          .replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+}
+
+/* Renderizador de markdown simples e seguro (escapa HTML antes) */
+function renderMarkdown(raw){
+  let text = raw.replace(/\r\n/g,"\n");
+
+  // separa blocos de código primeiro
+  const codeBlocks = [];
+  text = text.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+    codeBlocks.push(code);
+    return " CODE" + (codeBlocks.length-1) + " ";
+  });
+
+  text = escapeHtml(text);
+
+  // inline: código, negrito, itálico
+  text = text.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+  text = text.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  text = text.replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s).,;:!?]|$)/g, "$1<em>$2</em>");
+
+  // linhas -> parágrafos e listas
+  const lines = text.split("\n");
+  let html = "", inUl = false, inOl = false, para = [];
+  const flushPara = () => { if(para.length){ html += "<p>" + para.join("<br>") + "</p>"; para = []; } };
+  const closeLists = () => { if(inUl){html+="</ul>";inUl=false} if(inOl){html+="</ol>";inOl=false} };
+
+  for (const line of lines){
+    const l = line.trim();
+    if (!l){ flushPara(); closeLists(); continue; }
+    let m;
+    if ((m = l.match(/^#{1,4}\s+(.*)/))){ flushPara(); closeLists(); html += "<p><strong>"+m[1]+"</strong></p>"; }
+    else if ((m = l.match(/^[-*•]\s+(.*)/))){ flushPara(); if(inOl){html+="</ol>";inOl=false} if(!inUl){html+="<ul>";inUl=true} html += "<li>"+m[1]+"</li>"; }
+    else if ((m = l.match(/^\d+[.)]\s+(.*)/))){ flushPara(); if(inUl){html+="</ul>";inUl=false} if(!inOl){html+="<ol>";inOl=true} html += "<li>"+m[1]+"</li>"; }
+    else { closeLists(); para.push(l); }
+  }
+  flushPara(); closeLists();
+
+  // devolve os blocos de código
+  html = html.replace(/ CODE(\d+) /g, (_, i) =>
+    "<pre><code>" + escapeHtml(codeBlocks[+i]) + "</code></pre>");
+  return html;
+}
+
+function addMsg(kind, html){
+  const wrap = document.createElement("div");
+  wrap.className = "msg " + kind;
+  const avatar = kind === "user" ? "🙋" : (kind === "err" ? "⚠️" : "🧀");
+  wrap.innerHTML = '<div class="avatar">'+avatar+'</div><div class="bubble">'+html+"</div>";
+  chatEl.appendChild(wrap);
+  chatEl.scrollTop = chatEl.scrollHeight;
+  return wrap;
+}
+
+const FRASES_ESPERA = ["Fazendo um cafezim...", "Pensando nesse trem...", "Uai, peraí um tiquim...", "Cortando um queijim..."];
+let esperaIdx = 0;
+function addTyping(){
+  const wrap = document.createElement("div");
+  wrap.className = "msg bot";
+  wrap.id = "typing";
+  const frase = FRASES_ESPERA[esperaIdx++ % FRASES_ESPERA.length];
+  wrap.innerHTML = '<div class="avatar">🧀</div><div class="bubble typing">'+frase+
+                   ' <span class="dots"><span></span><span></span><span></span></span></div>';
+  chatEl.appendChild(wrap);
+  chatEl.scrollTop = chatEl.scrollHeight;
+}
+function removeTyping(){ const t = $("typing"); if(t) t.remove(); }
+
+/* ============================ API Gemini ============================ */
+function friendlyError(status, detail, scope){
+  if (scope === "app-min")
+    return "Nu, muita gente proseando ao mesmo tempo! Espera um minutim e manda de novo, sô.";
+  if (scope === "app-day")
+    return "A cota gratuita do dia do Trem Bão esgotou, uai. 🌙 Passa aqui amanhã que o trem renova!";
+  if (scope === "app" )
+    return "O proxy do app deu um nó" + (detail ? ": <code>"+escapeHtml(detail)+"</code>" : ".") + " Tenta de novo daqui a pouquim, sô.";
+  if (status === 400 || status === 401 || status === 403){
+    if (PROXY_URL && !state.ownKey)
+      return "Vixe, o app tá com problema na configuração da chave (erro " + status + "). Avisa o dono do Trem Bão, sô!";
+    return "Uai, essa chave num tá certa não, sô. Confere ela lá no <a href='https://aistudio.google.com/apikey' target='_blank' rel='noopener'>Google AI Studio</a> e cola de novo (botão ali em cima).";
+  }
+  if (status === 429)
+    return "Calma aí, sô! Deu muita mensagem num tiquim só e o plano grátis pediu um descanso. Espera um minutim e tenta de novo, uai.";
+  if (status === 404)
+    return "Esse modelo aí num tá disponível pra sua chave não, sô. Escolhe outro ali em cima na listinha.";
+  if (status === 503 || status === 500)
+    return "O trem do Google engasgou um cadim (servidor ocupado). Tenta de novo daqui a pouquim.";
+  if (status === 0)
+    return "O trem da internet caiu por aqui, sô. Dá uma olhada na sua conexão e tenta de novo, uai.";
+  return "Deu um trem esquisito aqui, sô" + (detail ? ": <code>"+escapeHtml(detail)+"</code>" : ".") + " Tenta de novo, uai.";
+}
+
+/* Chamada normalizada à API — direto no Google (com a chave do usuário) ou
+   através do proxy público. Sempre devolve {ok, status, scope, json}. */
+async function apiCall(method, body){
+  // ----- modo público: passa pelo proxy, que guarda a chave em segredo -----
+  if (PROXY_URL && !state.ownKey){
+    const r = await fetch(PROXY_URL, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" }, // text/plain evita preflight no Apps Script
+      body: JSON.stringify({ method, model: state.model, body })
+    });
+    const env = await r.json(); // o proxy sempre responde 200 com {status, data|error, scope?}
+    return {
+      ok: env.status >= 200 && env.status < 300,
+      status: env.status,
+      scope: env.scope || "",
+      json: env.data || { error: { message: env.error || "" } }
+    };
+  }
+  // ----- modo pessoal: direto no Google, com fallback se o modelo não existir -----
+  const tryModel = (m) => fetch(API_BASE + "/models/" + m + ":" + method, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-goog-api-key": state.key },
+    body: JSON.stringify(body)
+  });
+  let resp = await tryModel(state.model);
+  if (resp.status === 404 && state.model !== "gemini-2.5-flash") resp = await tryModel("gemini-2.5-flash");
+  const json = await resp.json().catch(() => ({}));
+  return { ok: resp.ok, status: resp.status, scope: "", json };
+}
+
+function extractText(data){
+  const c = data.candidates && data.candidates[0];
+  return (c && c.content && c.content.parts)
+    ? c.content.parts.map(p => p.text || "").join("").trim()
+    : "";
+}
+
+/* contador de tokens da sessão (mostrado no rodapé) */
+let sessIn = 0, sessOut = 0;
+function trackUsage(data){
+  const u = data.usageMetadata || {};
+  sessIn  += u.promptTokenCount || 0;
+  sessOut += (u.candidatesTokenCount || 0) + (u.thoughtsTokenCount || 0);
+  $("sessTok").textContent = " · Tokens da sessão: " + sessIn + " entrada / " + sessOut + " saída";
+}
+
+async function send(text){
+  if (state.busy || !text.trim()) return;
+  state.busy = true;
+  sendBtn.disabled = true;
+  chipsEl.classList.add("hidden");
+
+  addMsg("user", renderMarkdown(text));
+  state.history.push({ role: "user", parts: [{ text }] });
+  inputEl.value = "";
+  autosize();
+  addTyping();
+
+  try {
+    let r;
+    try {
+      r = await apiCall("generateContent", {
+        system_instruction: { parts: [{ text: PROMPT_BASE + NIVEIS[state.level] }] },
+        contents: state.history.slice(-MAX_TURNS),
+        generationConfig: { temperature: 0.9, maxOutputTokens: 1200 }
+      });
+    } catch (e) {
+      removeTyping();
+      addMsg("err", friendlyError(0));
+      state.history.pop();
+      return;
+    }
+
+    if (!r.ok){
+      const detail = (r.json && r.json.error && r.json.error.message) ? r.json.error.message.slice(0,160) : "";
+      removeTyping();
+      addMsg("err", friendlyError(r.status, detail, r.scope));
+      state.history.pop(); // não guarda a pergunta que falhou
+      return;
+    }
+
+    const data = r.json;
+    trackUsage(data);
+    const answer = extractText(data);
+
+    removeTyping();
+    if (!answer){
+      addMsg("err", "O modelo ficou sem palavras, uai. Tenta perguntar de outro jeito, sô.");
+      state.history.pop();
+      return;
+    }
+    state.history.push({ role: "model", parts: [{ text: answer }] });
+    addMsg("bot", renderMarkdown(answer));
+  } finally {
+    state.busy = false;
+    sendBtn.disabled = false;
+    inputEl.focus();
+  }
+}
+
+/* ============================ Setup / validação da chave ============================ */
+async function validateKey(key){
+  // chamada leve só pra conferir se a chave presta
+  const resp = await fetch(API_BASE + "/models?pageSize=5", {
+    headers: { "x-goog-api-key": key }
+  });
+  return resp;
+}
+
+async function start(){
+  const key = keyInput.value.trim();
+  setupError.classList.add("hidden");
+  if (!key){
+    setupError.textContent = "Cola a chave primeiro, uai!";
+    setupError.classList.remove("hidden");
+    return;
+  }
+  startBtn.disabled = true;
+  startBtn.textContent = "Conferindo a chave...";
+  try {
+    const resp = await validateKey(key);
+    if (!resp.ok){
+      setupError.innerHTML = "Essa chave num passou no teste não, sô (erro " + resp.status + "). Confere se copiou ela inteirinha lá do AI Studio.";
+      setupError.classList.remove("hidden");
+      return;
+    }
+    state.key = key;
+    state.ownKey = true;
+    if (PROXY_URL) $("changeKey").textContent = "usar sem chave";
+    keyInput.value = "";
+    setupEl.classList.add("hidden");
+    appEl.classList.remove("hidden");
+    welcome();
+    inputEl.focus();
+  } catch(e){
+    setupError.textContent = "Num consegui falar com o Google agora (problema de internet?). Tenta de novo daqui a pouquim.";
+    setupError.classList.remove("hidden");
+  } finally {
+    startBtn.disabled = false;
+    startBtn.textContent = "Começar a prosear";
+  }
+}
+
+/* ============================ Eventos ============================ */
+startBtn.addEventListener("click", start);
+keyInput.addEventListener("keydown", e => { if (e.key === "Enter") start(); });
+
+sendBtn.addEventListener("click", () => send(inputEl.value));
+inputEl.addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey){ e.preventDefault(); send(inputEl.value); }
+});
+function autosize(){
+  inputEl.style.height = "auto";
+  inputEl.style.height = Math.min(inputEl.scrollHeight, 130) + "px";
+}
+inputEl.addEventListener("input", autosize);
+
+levelSeg.addEventListener("click", e => {
+  const btn = e.target.closest("button[data-level]");
+  if (!btn) return;
+  state.level = btn.dataset.level;
+  levelSeg.querySelectorAll("button").forEach(b => b.classList.toggle("on", b === btn));
+});
+
+modelSel.addEventListener("change", () => { state.model = modelSel.value; });
+
+function welcome(){
+  if (!chatEl.children.length){
+    addMsg("bot", renderMarkdown(
+      "Ô, seja bem-vindo(a), sô! 🧀☕\n\nPega um cafezim e senta que o trem aqui tá pronto pra prosear. Pode perguntar **o que ocê quiser** — de receita de quitanda a programação, eu dou conta, uai.\n\nAli em cima cê escolhe o *nível de mineirice*: **Leve**, **Médio** ou **Raiz**."
+    ));
+  }
+}
+
+$("changeKey").addEventListener("click", () => {
+  if (PROXY_URL && state.ownKey){
+    // volta do modo "chave própria" pro modo público, sem sair do chat
+    state.ownKey = false;
+    state.key = "";
+    $("changeKey").textContent = "usar minha chave";
+    return;
+  }
+  state.key = "";
+  state.ownKey = false;
+  appEl.classList.add("hidden");
+  setupEl.classList.remove("hidden");
+  keyInput.focus();
+});
+
+$("backPublic").addEventListener("click", () => {
+  setupEl.classList.add("hidden");
+  appEl.classList.remove("hidden");
+  welcome();
+});
+
+/* ---------- inicialização ---------- */
+if (PROXY_URL){
+  // modo público: entra direto no chat, sem pedir chave
+  setupEl.classList.add("hidden");
+  appEl.classList.remove("hidden");
+  $("changeKey").textContent = "usar minha chave";
+  $("backPublic").classList.remove("hidden");
+  welcome();
+}
+
+chipsEl.addEventListener("click", e => {
+  const btn = e.target.closest("button");
+  if (btn) send(btn.textContent);
+});
+
+/* =====================================================================
+   CALCULADORA DE TOKENS — mineirês vs português padrão
+   ===================================================================== */
+const calcEl = $("calc"), composerEl = $("composer"), viewSeg = $("viewSeg");
+const calcInput = $("calcInput"), calcBtn = $("calcBtn"),
+      calcStatus = $("calcStatus"), calcResults = $("calcResults");
+let calcBusy = false;
+
+/* alternância Prosa <-> Calculadora */
+viewSeg.addEventListener("click", e => {
+  const btn = e.target.closest("button[data-view]");
+  if (!btn) return;
+  viewSeg.querySelectorAll("button").forEach(b => b.classList.toggle("on", b === btn));
+  const showChat = btn.dataset.view === "chat";
+  chatEl.classList.toggle("hidden", !showChat);
+  composerEl.classList.toggle("hidden", !showChat);
+  chipsEl.classList.toggle("hidden", !showChat || state.history.length > 0);
+  calcEl.classList.toggle("hidden", showChat);
+});
+
+const PROMPT_PADRAO = `Você é um assistente prestativo. Responda SEMPRE em português brasileiro padrão, formal e claro, sem regionalismos, gírias ou marcas de oralidade. As informações devem ser corretas, completas e úteis.`;
+
+const REWRITE_SYS = `Você reescreve textos em dois registros do português do Brasil, preservando EXATAMENTE o mesmo significado e o mesmo nível de detalhe.
+Responda APENAS com JSON válido neste formato: {"padrao":"...","mineires":"..."}
+- "padrao": o texto reescrito em português padrão formal, por extenso, sem contrações da fala.
+- "mineires": o MESMO conteúdo no dialeto mineiro raiz: "cê"/"ocê", "num" (não), "uai", "sô", "trem", diminutivos em -im, contrações da fala ("tô", "cê qué", "pra").`;
+
+function setCalcStatus(msg){ calcStatus.textContent = msg; }
+
+function throwIfBad(r){
+  if (r.ok) return r;
+  const detail = (r.json && r.json.error && r.json.error.message) ? r.json.error.message.slice(0,160) : "";
+  throw { status: r.status, detail, scope: r.scope };
+}
+
+async function countTok(text){
+  const r = throwIfBad(await apiCall("countTokens", {
+    contents: [{ role: "user", parts: [{ text }] }]
+  }));
+  return r.json.totalTokens || 0;
+}
+
+async function genRewrite(text){
+  const r = throwIfBad(await apiCall("generateContent", {
+    system_instruction: { parts: [{ text: REWRITE_SYS }] },
+    contents: [{ role: "user", parts: [{ text }] }],
+    generationConfig: { temperature: 0.4, maxOutputTokens: 900, responseMimeType: "application/json" }
+  }));
+  const data = r.json;
+  trackUsage(data);
+  const out = extractText(data);
+  let j = null;
+  try { j = JSON.parse(out); }
+  catch(e){ const m = out.match(/\{[\s\S]*\}/); if (m){ try { j = JSON.parse(m[0]); } catch(e2){} } }
+  if (!j || !j.padrao || !j.mineires) throw { status: -1, detail: "a reescrita não voltou no formato esperado" };
+  return j;
+}
+
+async function genAnswer(sys, question){
+  const r = throwIfBad(await apiCall("generateContent", {
+    system_instruction: { parts: [{ text: sys }] },
+    contents: [{ role: "user", parts: [{ text: question }] }],
+    generationConfig: { temperature: 0.7, maxOutputTokens: 800 }
+  }));
+  const data = r.json;
+  trackUsage(data);
+  const u = data.usageMetadata || {};
+  return {
+    text: extractText(data),
+    inTok: u.promptTokenCount || 0,
+    outTok: u.candidatesTokenCount || 0
+  };
+}
+
+function tokBar(v, max){
+  const w = max > 0 ? Math.max(4, Math.round(v / max * 100)) : 4;
+  return '<div class="tokbar"><i style="width:' + w + '%"></i></div>';
+}
+
+function duelCard(cls, title, tokIn, maxIn, textIn, tokOut, maxOut, answerHtml, isWinner){
+  return '<div class="duel-card ' + cls + (isWinner ? ' win' : '') + '">' +
+    '<div class="duel-title">' + title + (isWinner ? ' 🏆' : '') + '</div>' +
+    '<div class="tokrow"><span>Pergunta reescrita — <b>' + tokIn + ' tokens</b></span><span>' + textIn.length + ' caract.</span></div>' +
+    tokBar(tokIn, maxIn) +
+    '<div class="duel-text">' + escapeHtml(textIn) + '</div>' +
+    '<div class="tokrow"><span>Resposta — <b>' + tokOut + ' tokens</b></span></div>' +
+    tokBar(tokOut, maxOut) +
+    '<div class="duel-text">' + answerHtml + '</div>' +
+  '</div>';
+}
+
+/* economia de A em relação a B, em % (positivo = A gastou menos) */
+function economia(a, b){ return b > 0 ? Math.round((b - a) / b * 100) : 0; }
+
+function fraseEconomia(delta, rotulo){
+  if (delta > 0)  return rotulo + ": economizou " + delta + "%";
+  if (delta < 0)  return rotulo + ": gastou " + (-delta) + "% a mais";
+  return rotulo + ": empatou";
+}
+
+function renderCalc(rw, tokP, tokM, ansP, ansM){
+  const maxIn  = Math.max(tokP, tokM);
+  const maxOut = Math.max(ansP.outTok, ansM.outTok);
+  const totM = tokM + ansM.outTok, totP = tokP + ansP.outTok;
+  const dIn  = economia(tokM, tokP);
+  const dOut = economia(ansM.outTok, ansP.outTok);
+  const dTot = economia(totM, totP);
+  const mineiroVenceu = totM <= totP;
+
+  let html = '<div class="duel">';
+  html += duelCard("mine",   "🧀 Mineirês raiz",      tokM, maxIn, rw.mineires, ansM.outTok, maxOut, renderMarkdown(ansM.text), mineiroVenceu);
+  html += duelCard("padrao", "📜 Português padrão",   tokP, maxIn, rw.padrao,   ansP.outTok, maxOut, renderMarkdown(ansP.text), !mineiroVenceu);
+  html += '</div>';
+
+  const frase = mineiroVenceu
+    ? "<b>🏆 O mineirês levou a melhor, uai!</b> No total foram <b>" + totM + "</b> tokens contra <b>" + totP + "</b> do português padrão — economia de <b>" + dTot + "%</b>. Mineiro já nasce otimizado, sô: fala menos e resolve o mesmo trem."
+    : "<b>📜 Dessa vez o padrão gastou menos, sô...</b> Foram <b>" + totP + "</b> tokens contra <b>" + totM + "</b> do mineirês (" + (-dTot) + "% a mais). Prosa boa custa caro, uai — roda de novo que o resultado muda um cadim.";
+
+  html += '<div class="verdict' + (mineiroVenceu ? '' : ' lost') + '">' + frase +
+    '<div class="stat-pills">' +
+      '<span>' + fraseEconomia(dIn, "Entrada") + ' (' + tokM + ' vs ' + tokP + ')</span>' +
+      '<span>' + fraseEconomia(dOut, "Saída") + ' (' + ansM.outTok + ' vs ' + ansP.outTok + ')</span>' +
+      '<span>Total: ' + totM + ' vs ' + totP + ' tokens</span>' +
+    '</div></div>';
+
+  calcResults.innerHTML = html;
+}
+
+async function runCalc(){
+  const text = calcInput.value.trim();
+  if (!text || calcBusy) return;
+  calcBusy = true;
+  calcBtn.disabled = true;
+  calcResults.innerHTML = "";
+  try {
+    setCalcStatus("Reescrevendo o texto nos dois registros...");
+    const rw = await genRewrite(text);
+    setCalcStatus("Contando os tokens da entrada, uai...");
+    const tokP = await countTok(rw.padrao);
+    const tokM = await countTok(rw.mineires);
+    setCalcStatus("Perguntando pro assistente de português padrão...");
+    const ansP = await genAnswer(PROMPT_PADRAO, text);
+    setCalcStatus("Perguntando pro mineiro raiz... (fazendo um cafezim)");
+    const ansM = await genAnswer(PROMPT_BASE + NIVEIS.raiz, text);
+    setCalcStatus("");
+    renderCalc(rw, tokP, tokM, ansP, ansM);
+  } catch (e) {
+    setCalcStatus("");
+    calcResults.innerHTML = '<div class="msg err" style="max-width:100%"><div class="bubble">' +
+      friendlyError(e && e.status ? e.status : 0, e && e.detail ? e.detail : "", e && e.scope ? e.scope : "") + '</div></div>';
+  } finally {
+    calcBusy = false;
+    calcBtn.disabled = false;
+  }
+}
+
+calcBtn.addEventListener("click", runCalc);
+calcInput.addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey){ e.preventDefault(); runCalc(); }
+});
+</script>
+</body>
+</html>
