@@ -514,7 +514,8 @@ async function send(text){
       r = await apiCall("generateContent", {
         system_instruction: { parts: [{ text: PROMPT_BASE + NIVEIS[state.level] }] },
         contents: state.history.slice(-MAX_TURNS),
-        generationConfig: { temperature: 0.9, maxOutputTokens: 1200 }
+        // teto folgado: modelos com "raciocínio" gastam tokens internos dentro deste limite
+        generationConfig: { temperature: 0.9, maxOutputTokens: 4096 }
       });
     } catch (e) {
       removeTyping();
@@ -706,7 +707,7 @@ async function genRewrite(text){
   const r = throwIfBad(await apiCall("generateContent", {
     system_instruction: { parts: [{ text: REWRITE_SYS }] },
     contents: [{ role: "user", parts: [{ text }] }],
-    generationConfig: { temperature: 0.4, maxOutputTokens: 900, responseMimeType: "application/json" }
+    generationConfig: { temperature: 0.4, maxOutputTokens: 4096, responseMimeType: "application/json" }
   }));
   const data = r.json;
   trackUsage(data);
@@ -714,7 +715,11 @@ async function genRewrite(text){
   let j = null;
   try { j = JSON.parse(out); }
   catch(e){ const m = out.match(/\{[\s\S]*\}/); if (m){ try { j = JSON.parse(m[0]); } catch(e2){} } }
-  if (!j || !j.padrao || !j.mineires) throw { status: -1, detail: "a reescrita não voltou no formato esperado" };
+  if (!j || !j.padrao || !j.mineires){
+    const cand = data.candidates && data.candidates[0];
+    const cortou = cand && cand.finishReason === "MAX_TOKENS";
+    throw { status: -1, detail: cortou ? "a reescrita estourou o limite de tokens (tenta um texto menor)" : "a reescrita não voltou no formato esperado" };
+  }
   return j;
 }
 
@@ -722,7 +727,7 @@ async function genAnswer(sys, question){
   const r = throwIfBad(await apiCall("generateContent", {
     system_instruction: { parts: [{ text: sys }] },
     contents: [{ role: "user", parts: [{ text: question }] }],
-    generationConfig: { temperature: 0.7, maxOutputTokens: 800 }
+    generationConfig: { temperature: 0.7, maxOutputTokens: 2048 }
   }));
   const data = r.json;
   trackUsage(data);
