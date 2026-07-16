@@ -139,8 +139,9 @@
   #sendBtn:disabled{opacity:.55;cursor:wait}
   footer{font-size:11px;color:var(--ink-soft);text-align:center;padding:7px 12px 10px;background:#fffdf7}
 
-  /* ---------- Calculadora de tokens ---------- */
-  #calc{flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:14px}
+  /* ---------- Calculadora de tokens e Redutor ---------- */
+  #calc,#reducer{flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:14px}
+  #reducer.hidden,#calc.hidden{display:none}
   .calc-intro{background:#fdf6e9;border:1px dashed var(--line);border-radius:14px;padding:14px 16px;font-size:13.5px;color:var(--ink-soft);line-height:1.55}
   .calc-intro b{color:var(--terra-dark)}
   #calcInput{
@@ -232,6 +233,7 @@
     <div class="seg" id="viewSeg" title="Modo do app">
       <button data-view="chat" class="on">💬 Prosa</button>
       <button data-view="calc">🔢 Calculadora</button>
+      <button data-view="red">🔧 Redutor</button>
     </div>
     <div class="seg" id="levelSeg" title="Nível de mineirice das respostas">
       <button data-level="leve">Leve</button>
@@ -272,6 +274,24 @@
     </div>
   </div>
 
+  <!-- ============ MOTOR DE REDUÇÃO ============ -->
+  <div id="reducer" class="hidden">
+    <div class="calc-intro">
+      <b>O motor de redução:</b> regras da fonética mineira aplicadas por código puro (sem IA, instantâneo):
+      engole o <b>-r final</b> (falá, comê, doutô), gerúndio vira <b>-no</b> (fazeno, andano), <b>lh vira i</b> (véio, trabaio, muié),
+      <b>-inho vira -im</b> (pertim, cafezim), <b>cê</b>, <b>tá</b>, <b>num</b>, <b>memo</b>, <b>pruquê</b>, plural só no artigo (os menino)...
+      Cola um texto e vê ele encolher, uai. Depois dá pra contar os tokens de verdade pra medir a economia.
+    </div>
+    <textarea id="redInput" style="resize:vertical;min-height:74px;border:1.5px solid var(--line);border-radius:14px;padding:12px 14px;font-family:inherit;font-size:15px;color:var(--ink);background:#fff;outline:none" placeholder="Cola aqui o texto pra passar no motor, sô..."></textarea>
+    <div class="calc-actions">
+      <button id="redBtn" class="btn-primary">🔧 Reduzir, uai!</button>
+      <button id="redTokBtn" class="btn-primary hidden" style="background:var(--green)">⚖️ Contar tokens (antes vs depois)</button>
+      <button id="redExemplo" style="background:#fff;border:1.5px solid var(--line);color:var(--ink-soft);font-size:13px;font-weight:600;padding:10px 14px;border-radius:999px">usar um exemplo</button>
+      <div id="redStatus" style="font-size:13.5px;color:var(--ink-soft);font-style:italic"></div>
+    </div>
+    <div id="redOut"></div>
+  </div>
+
   <div id="chips">
     <button>Uai, me explica o que é inteligência artificial</button>
     <button>Me dá uma receita de pão de queijo</button>
@@ -283,7 +303,7 @@
     <textarea id="input" rows="1" placeholder="Escreve seu trem aqui, sô..."></textarea>
     <button id="sendBtn" class="btn-primary">Mandar</button>
   </div>
-  <footer>Feito com carinho pela cultura mineira ❤️ · As respostas vão direto pra API do Google Gemini (plano gratuito, sujeito a limites diários) · <b>v3</b><span id="sessTok"></span></footer>
+  <footer>Feito com carinho pela cultura mineira ❤️ · As respostas vão direto pra API do Google Gemini (plano gratuito, sujeito a limites diários) · <b>v4</b><span id="sessTok"></span></footer>
 </section>
 
 <script>
@@ -332,7 +352,15 @@ NÍVEL DE MINEIRICE DESTA CONVERSA:
 const NIVEIS = {
   leve:  `LEVE — Sotaque discreto: use "cê", "pra", um "uai" ou "sô" de vez em quando e um diminutivo aqui e ali. Escrita quase padrão, mas com o calor humano de Minas. Nada de contração pesada.`,
   medio: `MÉDIO — Mineirês nítido: "uai", "sô", "trem", "bão", diminutivos em -im e expressões típicas aparecendo com frequência boa, mantendo a leitura fácil pra qualquer brasileiro.`,
-  raiz:  `RAIZ — Mineirês carregado, do fundo do quintal: contrações da fala ("cê qué", "num", "tô", "vamo"), "uai" e "sô" fartos, vocabulário regional à vontade, comparação com café, queijo e quitanda quando couber. Mesmo assim, a informação tem que continuar clara e completa, uai.`
+  raiz:  `RAIZ — Mineirês carregado, do fundo do quintal, com REDUÇÃO FONÉTICA da fala aplicada na escrita:
+- engula o -r final de verbos e palavras: falá, comê, saí, trabaiá, lugá, qualqué, doutô;
+- gerúndio vira -no: fazeno, andano, correno, comeno;
+- "lh" vira "i": véio, fio, mió, pió, trabaio, oreia, muié;
+- -inho vira -im: pertim, pouquim, cafezim, rapidim;
+- está/estou/estava → tá/tô/tava; você → cê/ocê; com você → cocê; mesmo → memo; vamos → vamo (ou "bora"); espera aí → peraí; deixa eu → xô; porque → pruquê;
+- "não" vira "num" antes do verbo, com "não" só no arremate: "num vô não";
+- plural marcado só no artigo: os menino, meus trem, as coisa.
+Use "uai" e "sô" fartos, "trem" pra tudo, "demais da conta", e comparação com café, queijo e quitanda quando couber. Mesmo assim, a informação tem que continuar clara, completa e correta, uai.`
 };
 
 /* ============================ Estado ============================ */
@@ -664,21 +692,22 @@ chipsEl.addEventListener("click", e => {
 /* =====================================================================
    CALCULADORA DE TOKENS — mineirês vs português padrão
    ===================================================================== */
-const calcEl = $("calc"), composerEl = $("composer"), viewSeg = $("viewSeg");
+const calcEl = $("calc"), composerEl = $("composer"), viewSeg = $("viewSeg"), redEl = $("reducer");
 const calcInput = $("calcInput"), calcBtn = $("calcBtn"),
       calcStatus = $("calcStatus"), calcResults = $("calcResults");
 let calcBusy = false;
 
-/* alternância Prosa <-> Calculadora */
+/* alternância Prosa <-> Calculadora <-> Redutor */
 viewSeg.addEventListener("click", e => {
   const btn = e.target.closest("button[data-view]");
   if (!btn) return;
   viewSeg.querySelectorAll("button").forEach(b => b.classList.toggle("on", b === btn));
-  const showChat = btn.dataset.view === "chat";
-  chatEl.classList.toggle("hidden", !showChat);
-  composerEl.classList.toggle("hidden", !showChat);
-  chipsEl.classList.toggle("hidden", !showChat || state.history.length > 0);
-  calcEl.classList.toggle("hidden", showChat);
+  const v = btn.dataset.view;
+  chatEl.classList.toggle("hidden", v !== "chat");
+  composerEl.classList.toggle("hidden", v !== "chat");
+  chipsEl.classList.toggle("hidden", v !== "chat" || state.history.length > 0);
+  calcEl.classList.toggle("hidden", v !== "calc");
+  redEl.classList.toggle("hidden", v !== "red");
 });
 
 const PROMPT_PADRAO = `Você é um assistente prestativo. Responda SEMPRE em português brasileiro padrão, formal e claro, sem regionalismos, gírias ou marcas de oralidade. As informações devem ser corretas, completas e úteis.`;
@@ -688,7 +717,7 @@ Responda EXATAMENTE neste formato, sem markdown e sem comentários extras:
 ###PADRAO###
 (aqui o texto reescrito em português padrão formal, por extenso, sem contrações da fala)
 ###MINEIRES###
-(aqui o MESMO conteúdo no dialeto mineiro raiz: "cê"/"ocê", "num" no lugar de "não", "uai", "sô", "trem", diminutivos em -im, contrações da fala como "tô", "cê qué", "pra")`;
+(aqui o MESMO conteúdo no dialeto mineiro raiz, COM redução fonética da fala: -r final engolido — falá, comê, trabaiá, doutô; gerúndio em -no — fazeno, andano; lh vira i — véio, fio, mió, muié; -inho vira -im — pertim, cafezim; tá/tô/tava, cê/ocê, num no lugar de "não", memo, vamo, peraí, pruquê; plural só no artigo — os menino, meus trem; e os marcadores "uai", "sô", "trem")`;
 
 /* aceita variações com acento/espaços que o modelo possa inventar */
 function parseRewrite(out){
@@ -843,6 +872,137 @@ async function runCalc(){
 calcBtn.addEventListener("click", runCalc);
 calcInput.addEventListener("keydown", e => {
   if (e.key === "Enter" && !e.shiftKey){ e.preventDefault(); runCalc(); }
+});
+
+/* =====================================================================
+   MOTOR DE REDUÇÃO FONÉTICA MINEIRA — código puro, sem IA
+   ===================================================================== */
+const redInput = $("redInput"), redBtn = $("redBtn"), redTokBtn = $("redTokBtn"),
+      redStatus = $("redStatus"), redOut = $("redOut");
+let lastRed = null, redBusy = false;
+
+/* preserva a maiúscula inicial da palavra original */
+function cp(orig, novo){
+  return (orig.charAt(0) === orig.charAt(0).toUpperCase() && orig.charAt(0) !== orig.charAt(0).toLowerCase())
+    ? novo.charAt(0).toUpperCase() + novo.slice(1)
+    : novo;
+}
+
+const ACENTO = { a:"á", e:"ê", i:"í", o:"ô", u:"ú" };
+const GERUNDIO_NAO = ["quando","bando","lindo","brando","comando","quilando"];
+
+/* As regras rodam NESTA ordem — expressões primeiro, fonética geral depois.
+   ATENÇÃO: nada de \b aqui — em JS, \b falha ao lado de letra acentuada (você, está, aí).
+   Usamos lookarounds Unicode: (?<![\p{L}]) no começo e (?![\p{L}]) no fim. */
+const REGRAS = [
+  ["peraí & cia",       /(?<![\p{L}])espera\s+a[íi](?![\p{L}])/giu,   m => cp(m, "peraí")],
+  ["peraí & cia",       /(?<![\p{L}])vamos\s+embora(?![\p{L}])/giu,   m => cp(m, "vambora")],
+  ["peraí & cia",       /(?<![\p{L}])deixa\s+eu(?![\p{L}])/giu,       m => cp(m, "xô")],
+  ["peraí & cia",       /(?<![\p{L}])com\s+você(?![\p{L}])/giu,       m => cp(m, "cocê")],
+  ["peraí & cia",       /(?<![\p{L}])olha,/giu,                       m => cp(m, "ó,")],
+  ["mió & pió",         /(?<![\p{L}])melhor(?:es)?(?![\p{L}])/giu,    m => cp(m, "mió")],
+  ["mió & pió",         /(?<![\p{L}])pior(?:es)?(?![\p{L}])/giu,      m => cp(m, "pió")],
+  ["memo",              /(?<![\p{L}])mesm([oa]s?)(?![\p{L}])/giu,     (m,s) => cp(m, "mem" + s.toLowerCase())],
+  ["pruquê",            /(?<![\p{L}])por\s*qu[eê](?![\p{L}])/giu,     m => cp(m, "pruquê")],
+  ["cê & ocê",          /(?<![\p{L}])vocês(?![\p{L}])/giu,            m => cp(m, "cês")],
+  ["cê & ocê",          /(?<![\p{L}])você(?![\p{L}])/giu,             m => cp(m, "cê")],
+  ["tá & tô",           /(?<![\p{L}])está(?![\p{L}])/giu,             m => cp(m, "tá")],
+  ["tá & tô",           /(?<![\p{L}])estão(?![\p{L}])/giu,            m => cp(m, "tão")],
+  ["tá & tô",           /(?<![\p{L}])estou(?![\p{L}])/giu,            m => cp(m, "tô")],
+  ["tá & tô",           /(?<![\p{L}])estava(m|mos)?(?![\p{L}])/giu,   (m,s) => cp(m, "tava" + (s || "").toLowerCase())],
+  ["tá & tô",           /(?<![\p{L}])estamos(?![\p{L}])/giu,          m => cp(m, "tamo")],
+  ["tá & tô",           /(?<![\p{L}])estar(?![\p{L}])/giu,            m => cp(m, "tá")],
+  ["vamo",              /(?<![\p{L}])vamos(?![\p{L}])/giu,            m => cp(m, "vamo")],
+  ["pera",              /(?<![\p{L}])espera(?![\p{L}])/giu,           m => cp(m, "pera")],
+  ["num",               /(?<![\p{L}])não(?=\s+[\p{L}])/giu,           m => cp(m, "num")],
+  ["pra & pro",         /(?<![\p{L}])para\s+o(s?)(?![\p{L}])/giu,     (m,s) => cp(m, "pro" + s)],
+  ["pra & pro",         /(?<![\p{L}])para\s+a(s?)(?![\p{L}])/giu,     (m,s) => cp(m, "pra" + s)],
+  ["pra & pro",         /(?<![\p{L}])para(?![\p{L}])/giu,             m => cp(m, "pra")],
+  ["muié & cuié",       /(?<![\p{L}])mulher(?:es)?(?![\p{L}])/giu,    m => cp(m, "muié")],
+  ["muié & cuié",       /(?<![\p{L}])colher(?:es)?(?![\p{L}])/giu,    m => cp(m, "cuié")],
+  ["-inho vira -im",    /(?<![\p{L}])([\p{L}]{2,})inhos?(?![\p{L}])/giu, (m,base) => cp(m, base + "im")],
+  ["lh vira i",         /([\p{L}]{2,})lh(a|e|i)(?=r(?![\p{L}])|ndo(?![\p{L}])|d[oa]s?(?![\p{L}]))/giu, (m,pre,v) => pre + "i" + v],
+  ["lh vira i",         /(?<![\p{L}])([\p{L}]+)ilh([oa]s?)(?![\p{L}])/giu, (m,pre,fim) => cp(m, pre + "i" + fim.toLowerCase())],
+  ["lh vira i",         /(?<![\p{L}])([\p{L}]{2,})lh([oa]s?)(?![\p{L}])/giu, (m,pre,fim) => cp(m, pre + "i" + fim.toLowerCase())],
+  ["plural no artigo",  /(?<![\p{L}])(os|as|uns|umas|meus|minhas|seus|suas|esses|essas|aqueles|aquelas|dois|duas|três)\s+([\p{L}]{3,}?)s(?![\p{L}])/giu, (m,art,n) => art + " " + n],
+  ["gerúndio -no",      /(?<![\p{L}])([\p{L}]{1,}[aei])ndo(?![\p{L}])/giu, (m,base) => GERUNDIO_NAO.indexOf(m.toLowerCase()) >= 0 ? m : cp(m, base + "no")],
+  ["r final engolido",  /(?<![\p{L}])([\p{L}]{2,})([aeiou])r(?![\p{L}])/giu, (m,stem,v) => cp(m, stem + ACENTO[v.toLowerCase()])]
+];
+
+function reduzir(texto){
+  const aplicadas = new Map();
+  let out = texto;
+  for (const [nome, re, f] of REGRAS){
+    out = out.replace(re, (...args) => {
+      const res = f(...args);
+      if (res !== args[0]) aplicadas.set(nome, (aplicadas.get(nome) || 0) + 1);
+      return res;
+    });
+  }
+  return { texto: out, regras: Array.from(aplicadas.entries()) };
+}
+
+const EXEMPLO_RED = "Olha, você está falando demais! Espera aí, que os meninos velhos estavam comendo os bolinhos na cozinha. Pode parar de trabalhar, porque amanhã vamos embora para a casa da mulher do doutor, para comprar um queijinho melhor para você.";
+
+function runReduzir(){
+  const t = redInput.value.trim();
+  if (!t) return;
+  const r = reduzir(t);
+  lastRed = { antes: t, depois: r.texto };
+  const dChars = economia(r.texto.length, t.length);
+
+  let html = '<div class="duel">';
+  html += '<div class="duel-card padrao"><div class="duel-title">📜 Original</div>' +
+          '<div class="tokrow"><span><b>' + t.length + '</b> caracteres</span></div>' +
+          '<div class="duel-text">' + escapeHtml(t) + '</div></div>';
+  html += '<div class="duel-card mine"><div class="duel-title">🧀 Reduzido no motor</div>' +
+          '<div class="tokrow"><span><b>' + r.texto.length + '</b> caracteres (' + (dChars >= 0 ? "−" + dChars : "+" + (-dChars)) + '%)</span>' +
+          '<button class="linkbtn" id="redCopy" style="color:var(--terra);opacity:1;text-decoration:underline">copiar</button></div>' +
+          '<div class="duel-text">' + escapeHtml(r.texto) + '</div></div>';
+  html += '</div>';
+
+  if (r.regras.length){
+    html += '<div class="stat-pills">' + r.regras.map(([n,c]) =>
+      '<span style="background:var(--terra-soft);color:var(--terra-dark)">' + escapeHtml(n) + ' ×' + c + '</span>').join('') + '</div>';
+  } else {
+    html += '<div class="calc-note">Nenhuma regra casou nesse texto, uai — ou ele já tá enxuto, ou essas palavras num têm redução conhecida.</div>';
+  }
+  redOut.innerHTML = html;
+  $("redCopy").addEventListener("click", () => {
+    navigator.clipboard.writeText(r.texto).then(() => { $("redCopy").textContent = "copiado ✓"; });
+  });
+  redTokBtn.classList.remove("hidden");
+}
+
+async function runRedTok(){
+  if (!lastRed || redBusy) return;
+  redBusy = true; redTokBtn.disabled = true;
+  redStatus.textContent = "Contando os tokens, uai...";
+  try {
+    const ta = await countTok(lastRed.antes);
+    const td = await countTok(lastRed.depois);
+    const d = economia(td, ta);
+    const frase = d > 0
+      ? "🏆 O motor economizou <b>" + d + "%</b> em tokens (" + td + " vs " + ta + ")! Mineiro comprime até LLM, sô."
+      : d < 0
+      ? "Uai, deu <b>" + (-d) + "%</b> a MAIS em tokens (" + td + " vs " + ta + "), mesmo com menos letra. É que palavra reduzida vira token raro pro tokenizador — ele conhece \"fazendo\" inteirinho, mas \"fazeno\" ele pica em pedaço. O trem é traiçoeiro, sô!"
+      : "Empatou: " + ta + " tokens dos dois lado, uai.";
+    redOut.insertAdjacentHTML("beforeend", '<div class="verdict' + (d < 0 ? ' lost' : '') + '" style="margin-top:12px">' + frase + '</div>');
+    redStatus.textContent = "";
+  } catch(e){
+    redStatus.textContent = "";
+    redOut.insertAdjacentHTML("beforeend", '<div class="msg err" style="max-width:100%;margin-top:10px"><div class="bubble">' +
+      friendlyError(e && e.status ? e.status : 0, e && e.detail ? e.detail : "", e && e.scope ? e.scope : "") + '</div></div>');
+  } finally {
+    redBusy = false; redTokBtn.disabled = false;
+  }
+}
+
+redBtn.addEventListener("click", runReduzir);
+redTokBtn.addEventListener("click", runRedTok);
+$("redExemplo").addEventListener("click", () => { redInput.value = EXEMPLO_RED; runReduzir(); });
+redInput.addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey){ e.preventDefault(); runReduzir(); }
 });
 </script>
 </body>
