@@ -283,7 +283,7 @@
     <textarea id="input" rows="1" placeholder="Escreve seu trem aqui, sô..."></textarea>
     <button id="sendBtn" class="btn-primary">Mandar</button>
   </div>
-  <footer>Feito com carinho pela cultura mineira ❤️ · As respostas vão direto pra API do Google Gemini (plano gratuito, sujeito a limites diários).<span id="sessTok"></span></footer>
+  <footer>Feito com carinho pela cultura mineira ❤️ · As respostas vão direto pra API do Google Gemini (plano gratuito, sujeito a limites diários) · <b>v3</b><span id="sessTok"></span></footer>
 </section>
 
 <script>
@@ -483,7 +483,7 @@ async function apiCall(method, body){
 function extractText(data){
   const c = data.candidates && data.candidates[0];
   return (c && c.content && c.content.parts)
-    ? c.content.parts.map(p => p.text || "").join("").trim()
+    ? c.content.parts.filter(p => !p.thought).map(p => p.text || "").join("").trim()
     : "";
 }
 
@@ -684,9 +684,20 @@ viewSeg.addEventListener("click", e => {
 const PROMPT_PADRAO = `Você é um assistente prestativo. Responda SEMPRE em português brasileiro padrão, formal e claro, sem regionalismos, gírias ou marcas de oralidade. As informações devem ser corretas, completas e úteis.`;
 
 const REWRITE_SYS = `Você reescreve textos em dois registros do português do Brasil, preservando EXATAMENTE o mesmo significado e o mesmo nível de detalhe.
-Responda APENAS com JSON válido neste formato: {"padrao":"...","mineires":"..."}
-- "padrao": o texto reescrito em português padrão formal, por extenso, sem contrações da fala.
-- "mineires": o MESMO conteúdo no dialeto mineiro raiz: "cê"/"ocê", "num" (não), "uai", "sô", "trem", diminutivos em -im, contrações da fala ("tô", "cê qué", "pra").`;
+Responda EXATAMENTE neste formato, sem markdown e sem comentários extras:
+###PADRAO###
+(aqui o texto reescrito em português padrão formal, por extenso, sem contrações da fala)
+###MINEIRES###
+(aqui o MESMO conteúdo no dialeto mineiro raiz: "cê"/"ocê", "num" no lugar de "não", "uai", "sô", "trem", diminutivos em -im, contrações da fala como "tô", "cê qué", "pra")`;
+
+/* aceita variações com acento/espaços que o modelo possa inventar */
+function parseRewrite(out){
+  const m = out.match(/###\s*PADR[AÃ]O\s*###([\s\S]*?)###\s*MINEIR[EÊ]S\s*###([\s\S]*)/i);
+  if (!m) return null;
+  const padrao = m[1].trim(), mineires = m[2].trim();
+  if (!padrao || !mineires) return null;
+  return { padrao, mineires };
+}
 
 function setCalcStatus(msg){ calcStatus.textContent = msg; }
 
@@ -703,22 +714,30 @@ async function countTok(text){
   return r.json.totalTokens || 0;
 }
 
-async function genRewrite(text){
+async function genRewrite(text, tentativa){
   const r = throwIfBad(await apiCall("generateContent", {
     system_instruction: { parts: [{ text: REWRITE_SYS }] },
-    contents: [{ role: "user", parts: [{ text }] }],
-    generationConfig: { temperature: 0.4, maxOutputTokens: 4096, responseMimeType: "application/json" }
+    contents: [{ role: "user", parts: [{ text: "Reescreva nos dois registros:\n\n" + text }] }],
+    generationConfig: { temperature: 0.4, maxOutputTokens: 4096 }
   }));
   const data = r.json;
   trackUsage(data);
   const out = extractText(data);
-  let j = null;
-  try { j = JSON.parse(out); }
-  catch(e){ const m = out.match(/\{[\s\S]*\}/); if (m){ try { j = JSON.parse(m[0]); } catch(e2){} } }
-  if (!j || !j.padrao || !j.mineires){
+
+  let j = parseRewrite(out);
+  if (!j){
+    // compatibilidade: se o modelo teimar em responder JSON, aproveita mesmo assim
+    try {
+      const o = JSON.parse(out.replace(/^```(?:json)?\s*|\s*```$/g, ""));
+      if (o && o.padrao && o.mineires) j = { padrao: String(o.padrao), mineires: String(o.mineires) };
+    } catch(e){}
+  }
+  if (!j){
+    if (!tentativa) return genRewrite(text, 1); // uma nova tentativa automática, de graça
     const cand = data.candidates && data.candidates[0];
-    const cortou = cand && cand.finishReason === "MAX_TOKENS";
-    throw { status: -1, detail: cortou ? "a reescrita estourou o limite de tokens (tenta um texto menor)" : "a reescrita não voltou no formato esperado" };
+    const fr = (cand && cand.finishReason) || "?";
+    const amostra = out ? out.slice(0, 90) : "(resposta vazia)";
+    throw { status: -1, detail: "reescrita ilegível (motivo=" + fr + "): " + amostra };
   }
   return j;
 }
