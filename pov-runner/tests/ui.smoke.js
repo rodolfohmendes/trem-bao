@@ -188,6 +188,44 @@ async function launch() {
   const savedResult = await page.evaluate(() => window.__db.execucoes.find((x) => /Prisma Access/.test(x.caso_nome) && x.ativo).resultado_obtido);
   assert.equal(savedResult, draft, 'sobrescrever grava o rascunho');
 
+  // ------------------------------------------------------------ 05b conflito num formulário: o retry não desfaz a edição de outra pessoa
+  step('05b conflito ao editar a PoV (retry manda só o que mudou)');
+  await page.click('#btn-pov-edit');
+  await page.waitForSelector('#pov-form');
+  await page.fill('#np-objetivo', 'Objetivo revisto: comprovar URL, DNS, WildFire, descriptografia e ZTNA no laboratório do banco.');
+  await page.evaluate(() => {
+    const p = window.__db.povs.find((x) => x.cliente === 'Banco Exemplo');
+    p.contato_cliente = 'Outro Contato (CISO)';
+    p.autor = 'bruno.lima@example.com';
+    p.atualizado_em = new Date().toISOString();
+  });
+  await page.click('#pov-form [data-act=ok]');
+  await toast(/alterad[oa] por bruno\.lima@example\.com.*confira e salve de novo/);
+  assert.equal(await page.inputValue('#np-contato'), 'Outro Contato (CISO)', 'campo intocado recebe o valor novo do servidor');
+  await page.click('#pov-form [data-act=ok]');
+  await closed('#pov-form');
+  const povA = await page.evaluate(() => window.__db.povs.find((x) => x.cliente === 'Banco Exemplo'));
+  assert.equal(povA.contato_cliente, 'Outro Contato (CISO)', 'o retry não desfaz a edição da outra pessoa');
+  assert.match(povA.objetivo, /Objetivo revisto/, 'a minha edição foi gravada');
+
+  // ------------------------------------------------------------ 05c evidência digitada e não "Adicionada"
+  step('05c evidência digitada sem "Adicionar"');
+  await openPanel('Advanced DNS Security');
+  await page.fill('#ep-ev-url', 'https://drive.google.com/file/d/1DnSeViDeNcIa0123456789abcdefXYZ/view');
+  await page.keyboard.press('Escape');
+  await page.waitForSelector('.modal:has-text("Descartar as alterações?")');
+  await page.click('.modal:has-text("Descartar as alterações?") [data-act=no]');
+  await page.fill('#ep-ev-url', '');
+  await page.fill('#ep-ev-label', 'Captura do túnel DNS');
+  await page.click('#ep-save');
+  await toast(/está sem link/);
+  assert.ok(await page.$('#exec-panel'), 'rótulo sem link interrompe o salvamento');
+  await page.fill('#ep-ev-url', 'https://drive.google.com/file/d/1DnSeViDeNcIa0123456789abcdefXYZ/view');
+  await page.click('#ep-save');
+  await closed('#exec-panel');
+  const dnsEv = await page.evaluate(() => window.__db.execucoes.find((x) => /DNS Security/.test(x.caso_nome) && x.ativo).evidencias);
+  assert.ok(dnsEv.some((e) => e.label === 'Captura do túnel DNS' && /1DnSeViDeNcIa/.test(e.url)), 'evidência digitada entra ao salvar');
+
   // ------------------------------------------------------------ 06 bloqueado exige pendência
   step('06 bloqueado exige pendência');
   await openPanel('Prisma SD-WAN');
@@ -267,16 +305,40 @@ async function launch() {
   assert.equal((await page.$$('#exec-panel .ck-item[data-t=step]')).length, 3, 'título não é avaliável');
   await page.click('#ep-cancel');
   await closed('#exec-panel');
+  // caso definido com o cliente que saiu do plano volta pelo botão "Incluir no plano" (reativa a mesma execução)
+  await openPanel('Envio dos logs do firewall');
+  await page.click('#ep-remove');
+  await answer('Integração com o SIEM ficou para a fase 2.');
+  await closed('#exec-panel');
+  assert.equal(await page.$(row('Envio dos logs do firewall')), null, 'caso próprio saiu do plano');
+  await tab('plano');
+  const incluir = '#custom-list .custom-item:has-text("Envio dos logs do firewall") [data-include-custom]';
+  await page.waitForSelector(incluir);
+  await page.click(incluir);
+  await answer('Cliente antecipou a integração com o SIEM.');
+  await toast(/reincluído no plano/);
+  await tab('exec');
+  assert.match(await text(row('Envio dos logs do firewall') + ' .c-st'), /Não aplicável/, 'volta com o que já tinha sido registrado');
 
   // ------------------------------------------------------------ 09 critérios
   step('09 critérios');
   await tab('criterios');
+  const critCount = () => page.evaluate(() => window.__db.criterios.filter((c) => c.ativo).length);
+  const before = await critCount();
   await page.click('#btn-crit-new');
   await page.waitForSelector('#crit-form');
   await page.fill('#cr-texto', 'Postura de nuvem: apontar buckets públicos em até 24 h');
   await page.selectOption('#cr-peso', 'desejavel');
-  await page.click('#crit-form [data-act=ok]');
+  // com o servidor lento, Ctrl+Enter repetido e clique duplo gravam uma vez só
+  await page.evaluate(() => { window.__dev.latency = 500; });
+  await page.focus('#cr-texto');
+  await page.keyboard.press('Control+Enter');
+  await page.keyboard.press('Control+Enter');
+  await page.click('#crit-form [data-act=ok]', { force: true }).catch(() => {});
   await closed('#crit-form');
+  await page.evaluate(() => { window.__dev.latency = 25; });
+  await page.waitForTimeout(600);
+  assert.equal(await critCount(), before + 1, 'um critério só, apesar de 3 envios');
   const critRow = '#crit-body tr:has-text("Postura de nuvem: apontar")';
   await page.waitForSelector(critRow);
   assert.match(await text(critRow), /Sem casos vinculados/);
@@ -325,9 +387,46 @@ async function launch() {
   assert.equal(csv.charCodeAt(0), 0xfeff, 'CSV com BOM');
   assert.doesNotMatch(csv, /Observações internas/, 'CSV do cliente sem colunas internas');
 
+  // ------------------------------------------------------------ 10b modo cliente nunca mostra/abre/baixa o documento interno
+  step('10b pré-visualização e último documento interno no modo cliente');
+  const srcdoc = () => page.evaluate(() => document.getElementById('preview').srcdoc);
+  await page.click('#rep-publico button[data-v=interno]');
+  await page.waitForFunction(() => /USO INTERNO/.test(document.getElementById('preview').srcdoc));
+  await page.click('#btn-rep-save');
+  await page.waitForFunction(() => /_interno_/.test(document.getElementById('rep-result').textContent));
+  assert.ok(await page.$('#rep-result a:has-text("pasta")'));
+  // o servidor fica fora do ar: a pré-visualização do cliente não chega
+  await page.evaluate(() => { window.__dev.realPreview = window.__dev.api.apiPreviewReport; window.__dev.api.apiPreviewReport = () => { throw new Error('Tempo esgotado no servidor.'); }; });
+  await page.click('#btn-client-mode');
+  assert.doesNotMatch(await srcdoc(), /USO INTERNO/, 'o documento interno sai da tela no mesmo instante');
+  await toast(/Tempo esgotado/);
+  assert.doesNotMatch(await srcdoc(), /USO INTERNO/, 'e não volta quando a chamada falha');
+  assert.equal((await text('#rep-result')).trim(), '', 'links do documento interno somem');
+  assert.ok(await page.isDisabled('#btn-rep-pdf'), '"Baixar PDF" do documento interno fica desabilitado');
+  const noPopup = page.waitForEvent('popup', { timeout: 800 }).catch(() => null);
+  await page.click('#btn-rep-open');
+  assert.equal(await noPopup, null, '"Abrir em nova aba" recusa sem a versão do cliente');
+  await page.evaluate(() => { window.__dev.api.apiPreviewReport = window.__dev.realPreview; });
+  await page.click('#btn-rep-preview');
+  await page.waitForFunction(() => /Preparado para/.test(document.getElementById('preview').srcdoc));
+  assert.doesNotMatch(await srcdoc(), /USO INTERNO/);
+  const [popup] = await Promise.all([page.waitForEvent('popup'), page.click('#btn-rep-open')]);
+  await popup.waitForLoadState();
+  const popupText = await popup.textContent('body');
+  assert.match(popupText, /Preparado para Banco Exemplo/);
+  assert.doesNotMatch(popupText, /USO INTERNO/);
+  await popup.close();
+  await page.click('#btn-client-mode');
+  await page.waitForSelector('#client-banner.hidden', { state: 'attached' });
+  assert.match(await text('#rep-result'), /_interno_/, 'fora do modo cliente o último documento volta a aparecer');
+
   // ------------------------------------------------------------ 11 modo cliente
   step('11 modo cliente');
   await tab('exec');
+  await openPanel('Advanced WildFire');
+  assert.ok(await page.$('#exec-panel ul.attempts'), 'lista de tentativas na visão interna');
+  await page.click('#ep-cancel');
+  await closed('#exec-panel');
   await openPanel('Advanced URL Filtering');
   assert.match(await text('#exec-panel'), /Posicionamento oficial/);
   assert.match(await text('#exec-panel'), /Observações internas/);
@@ -347,6 +446,13 @@ async function launch() {
   await shot('11-modo-cliente.png');
   await page.click('#ep-cancel');
   await closed('#exec-panel');
+  // tentativas: o cliente vê só a linha de re-teste, como no relatório
+  await openPanel('Advanced WildFire');
+  assert.equal(await page.$('#exec-panel ul.attempts'), null, 'sem a lista de tentativas no modo cliente');
+  assert.match(await text('#ep-reteste'), /Re-executado: tentativa 2 .*primeiro resultado: Reprovado/);
+  assert.doesNotMatch(await text('#exec-panel'), /Na primeira rodada/, 'resultado da tentativa anterior não aparece');
+  await page.click('#ep-cancel');
+  await closed('#exec-panel');
   await openPanel('ZTNA para aplicação privada');
   const ztna = await text('#exec-panel .case-doc');
   assert.match(ztna, /\[link interno omitido\]/, 'link interno trocado no texto do caso');
@@ -364,12 +470,28 @@ async function launch() {
   await openPov('Varejo Exemplo');
   await page.click('#btn-accept-plan');
   await page.waitForSelector('#accept-form');
-  await page.fill('#ap-por', 'Diego Ramos (Arquiteto de Nuvem)');
+  await page.check('#ap-sem');
+  await page.fill('#ap-motivo', 'Cliente segura o aceite enquanto avalia o Concorrente X internamente.');
   await page.click('#accept-form [data-act=ok]');
   await closed('#accept-form');
   await page.waitForFunction(() => /Em execução/.test(document.querySelector('#pov-header .st').textContent));
-  assert.match(await text('#pov-header'), /Plano aceito em/);
+  // sem aceite formal: nada de "Plano aceito"; o motivo é interno
+  assert.match(await text('#pov-aceite-plano'), /Execução iniciada em .* sem aceite formal do plano/);
+  assert.match(await text('#pov-aceite-plano'), /Concorrente X/, 'visão interna mostra o motivo');
+  assert.doesNotMatch(await text('#pov-header'), /Plano aceito|plano aceito/);
+  assert.ok(await page.$('#pov-header .badge:has-text("sem aceite formal")'));
+  await tab('plano');
+  assert.match(await text('#scope-banner'), /sem aceite formal do plano: depois do início da execução/);
+  await page.click('#btn-client-mode');
+  await page.waitForSelector('#client-banner:not(.hidden)');
+  assert.match(await text('#pov-aceite-plano'), /sem aceite formal do plano/);
+  assert.doesNotMatch(await text('#pov-header'), /Concorrente X|Sem aceite formal:/, 'motivo interno oculto no modo cliente');
+  await page.click('#btn-client-mode');
+  await page.waitForSelector('#client-banner.hidden', { state: 'attached' });
   await home();
+  const varejo = await text('.pov-card:has-text("Varejo Exemplo")');
+  assert.match(varejo, /sem aceite formal/);
+  assert.doesNotMatch(varejo, /plano aceito/);
   await openPov('Banco Exemplo');
   await page.click('#btn-close-pov');
   await page.waitForSelector('#close-form');

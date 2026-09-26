@@ -75,8 +75,8 @@
       <div id="tab-exec" class="tab hidden" role="tabpanel">
         <div class="counters" id="exec-counters"></div>
         <div class="exec-filters">
-          <div class="seg" id="exec-filter" aria-label="Filtrar por status"></div>
-          <label class="check"><input type="checkbox" id="exec-mine"> meus</label>
+          <div class="seg" id="exec-filter" role="group" aria-label="Filtrar por status"></div>
+          <label class="check" id="exec-mine-wrap" title="Casos cujo Responsável tem o seu e-mail ou o seu nome"><input type="checkbox" id="exec-mine"> meus</label>
           <label class="check"><input type="checkbox" id="exec-today"> hoje</label>
           <input type="search" id="exec-q" class="grow" placeholder="Buscar caso ou responsável…" aria-label="Buscar casos do plano">
         </div>
@@ -134,7 +134,7 @@
         <div class="report-opts card">
           <div>
             <label>Documento</label>
-            <div class="seg" id="rep-tipo">
+            <div class="seg" id="rep-tipo" role="group" aria-label="Documento">
               <button data-v="plano">Plano de testes</button>
               <button data-v="resultados">Relatório de resultados</button>
               <button data-v="status">Status da PoV</button>
@@ -142,7 +142,7 @@
           </div>
           <div>
             <label>Audiência</label>
-            <div class="seg" id="rep-publico">
+            <div class="seg" id="rep-publico" role="group" aria-label="Audiência">
               <button data-v="interno">Interno</button>
               <button data-v="cliente">Cliente</button>
             </div>
@@ -161,7 +161,7 @@
           <div id="rep-result" class="links"></div>
         </div>
         <div id="rep-leaks"></div>
-        <iframe id="preview" class="preview" sandbox="allow-same-origin allow-popups" title="Pré-visualização do documento"></iframe>
+        <iframe id="preview" class="preview" sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" title="Pré-visualização do documento"></iframe>
         <p class="faint small">Se o PDF gerado no servidor não sair como a pré-visualização: Abrir em nova aba → Imprimir → Salvar como PDF.</p>
         <h2 class="sub-h">Documentos gerados</h2>
         <div id="rep-history"></div>
@@ -184,6 +184,7 @@
   </main>
 
   <div id="modal-root"></div>
+  <datalist id="team-emails"></datalist>
   <div id="toast" role="status" aria-live="polite"></div>
   <script>
 <?!= clientSharedCode(); ?>

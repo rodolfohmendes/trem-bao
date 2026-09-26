@@ -136,6 +136,7 @@ function devServer(TEMPLATE, GasTemplate) {
     var res;
     if (input && input.pov_id) {
       res = updatePovRow(requirePovAccess(input.pov_id, user), input, refs);
+      if (editRemovesOwnAccess(res.row, user)) throw new Error('Essa alteração tiraria você da PoV: mantenha seu e-mail em Responsável ou Equipe (ou peça a um administrador).');
       updateRowsByKey(SHEETS.POVS, [res.row]);
     } else {
       res = createPovRow(input || {}, refs);
@@ -738,6 +739,8 @@ function devServer(TEMPLATE, GasTemplate) {
   clock = null;
 
   // ================================================================ google.script.run falso
+  // latência simulada (ms) — o teste aumenta para exercitar clique duplo / Ctrl+Enter repetido
+  var dev = { api: api, latency: 25, setUser: function (email) { db.session.email = email; } };
   function runner(ok, ko) {
     var r = {};
     r.withSuccessHandler = function (f) { return runner(f, ko); };
@@ -751,14 +754,14 @@ function devServer(TEMPLATE, GasTemplate) {
           try { out = api[name].apply(null, args); out = out === undefined ? null : JSON.parse(JSON.stringify(out)); }
           catch (e) { var err = new Error(e && e.message ? e.message : String(e)); if (ko) ko(err); else console.error(err); return; }
           if (ok) ok(out);
-        }, 25);
+        }, dev.latency);
       };
     });
     return r;
   }
   window.google = { script: { run: runner(null, null) } };
   window.__db = db;
-  window.__dev = { api: api, setUser: function (email) { db.session.email = email; } };
+  window.__dev = dev;
 }
 /* eslint-enable no-undef */
 

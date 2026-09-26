@@ -86,7 +86,7 @@
     povId: null, pov: null, d: null, tab: 'exec', tabByPov: {},
     exec: { status: '', mine: false, today: false, q: '', selected: {} },
     plan: { sel: {}, q: '', industry: '', lab: false, deprecated: false, hideIn: false, checked: {}, open: {} },
-    rep: { tipo: 'resultados', publico: 'interno', detalhe: null, preview: null, key: '', seq: 0, lastSave: null },
+    rep: { tipo: 'resultados', publico: 'interno', detalhe: null, preview: null, seq: 0, lastSave: null },
     clientMode: lsGet(LS_CLIENT) === '1',
     adminInfo: null, imp: { ref: '', name: '', dry: null, error: '', allowPartial: false, confirmOrphans: false },
   };
@@ -129,6 +129,33 @@
       root.querySelector('.actions button:not([disabled])');
     if (el) { try { el.focus({ preventScroll: true }); } catch (e) { el.focus(); } }
   }
+  var FOCUS_KEYS = ['data-exec', 'data-crit', 'data-pend', 'data-pov', 'data-edit-custom', 'data-include-custom'];
+  /** Como reencontrar o elemento que tinha o foco depois que a tela for redesenhada (por id ou data-*). */
+  function focusKey(el) {
+    if (!el || el === document.body || !el.closest) return null;
+    var key = { id: el.id || '', act: el.getAttribute('data-act') || '', owner: null };
+    for (var i = 0; i < FOCUS_KEYS.length && !key.owner; i++) {
+      var o = el.closest('[' + FOCUS_KEYS[i] + ']');
+      if (o) key.owner = { attr: FOCUS_KEYS[i], value: o.getAttribute(FOCUS_KEYS[i]) };
+    }
+    return key;
+  }
+  function refocus(prev, key) {
+    var target = prev && document.body.contains(prev) ? prev : null;
+    if (!target && key) {
+      if (key.owner) {
+        var owner = qsa('[' + key.owner.attr + ']').filter(function (x) { return x.getAttribute(key.owner.attr) === key.owner.value; })[0];
+        if (owner) target = (key.act && owner.querySelector('[data-act="' + key.act + '"]')) || (owner.hasAttribute(key.owner.attr) && owner.tabIndex >= 0 ? owner : owner.querySelector('button, a, input, [tabindex]')) || owner;
+      }
+      if (!target && key.id) target = document.getElementById(key.id);
+    }
+    if (target && target.focus) { try { target.focus({ preventScroll: true }); } catch (e) { /* elemento sumiu */ } }
+  }
+  function focusables(root) {
+    return qsa('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])', root).filter(function (x) {
+      return !x.disabled && x.type !== 'hidden' && x.offsetParent !== null;
+    });
+  }
   /**
    * Abre um modal. o: {title (HTML já escapado), sub (HTML), body, footer (HTML), wide, cls, isDirty(), onClose()}.
    * Devolve {el, $, close, requestClose, busy}. Esc e clique fora chamam requestClose (que confirma se houver rascunho).
@@ -149,6 +176,7 @@
     bg.appendChild(m);
     $('modal-root').appendChild(bg);
     var prevFocus = document.activeElement;
+    var prevKey = focusKey(prevFocus);
     var h = { el: m, closed: false };
     h.$ = function (sel) { return m.querySelector(sel); };
     h.close = function () {
@@ -159,7 +187,8 @@
       if (i >= 0) modals.splice(i, 1);
       document.body.classList.toggle('modal-open', modals.length > 0);
       if (o.onClose) o.onClose();
-      if (prevFocus && prevFocus.focus && document.body.contains(prevFocus)) { try { prevFocus.focus(); } catch (e) { /* elemento sumiu */ } }
+      // depois do redesenho (setView logo após fechar), devolve o foco ao mesmo elemento ou ao equivalente
+      setTimeout(function () { if (!modals.length) refocus(prevFocus, prevKey); else if (topModal().el.contains(prevFocus)) refocus(prevFocus, null); }, 0);
     };
     h.requestClose = function () {
       if (o.isDirty && o.isDirty()) {
@@ -174,6 +203,15 @@
     };
     m.querySelector('.x').addEventListener('click', function () { h.requestClose(); });
     bg.addEventListener('mousedown', function (e) { if (e.target === bg) h.requestClose(); });
+    // foco preso no modal (Tab e Shift+Tab circulam dentro dele)
+    m.addEventListener('keydown', function (e) {
+      if (e.key !== 'Tab') return;
+      var f = focusables(m);
+      if (!f.length) { e.preventDefault(); return; }
+      var first = f[0], last = f[f.length - 1];
+      if (e.shiftKey && (document.activeElement === first || !m.contains(document.activeElement))) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && (document.activeElement === last || !m.contains(document.activeElement))) { e.preventDefault(); first.focus(); }
+    });
     modals.push(h);
     document.body.classList.add('modal-open');
     setTimeout(function () { if (!h.closed) focusFirst(m); }, 0);
@@ -182,6 +220,11 @@
   function topModal() { return modals.length ? modals[modals.length - 1] : null; }
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape' && modals.length) { e.preventDefault(); topModal().requestClose(); }
+  });
+  // se o foco escapar para o fundo (clique fora, leitor de tela), volta para o modal do topo
+  document.addEventListener('focusin', function (e) {
+    var top = topModal();
+    if (top && !top.el.contains(e.target) && !(e.target.closest && e.target.closest('#toast'))) focusFirst(top.el);
   });
 
   /** Confirmação dentro da página. Resolve true/false. */
@@ -207,7 +250,7 @@
       var max = o.max || LIMITS.medium;
       var field = o.multiline
         ? '<textarea id="ask-text" rows="3" maxlength="' + max + '" placeholder="' + esc(o.placeholder || '') + '">' + esc(o.value || '') + '</textarea>'
-        : '<input type="text" id="ask-text" maxlength="' + max + '" placeholder="' + esc(o.placeholder || '') + '" value="' + esc(o.value || '') + '">';
+        : '<input type="text" id="ask-text" maxlength="' + max + '" placeholder="' + esc(o.placeholder || '') + '" value="' + esc(o.value || '') + '"' + (o.list ? ' list="' + esc(o.list) + '"' : '') + '>';
       var h = openModal({
         title: esc(title), sub: o.sub || '', cls: 'narrow ask-modal',
         body: '<div class="row"><label for="ask-text">' + esc(o.label || 'Motivo') + '</label>' + field + '<div class="field-err" id="ask-err" role="alert"></div></div>',
@@ -250,12 +293,17 @@
     snap = formSnapshot(h.el);
     h.markClean = function () { snap = formSnapshot(h.el); };
     h.$('[data-act=cancel]').addEventListener('click', function () { h.requestClose(); });
+    var inFlight = false;
     function submit() {
-      var p = o.onOk(h);
+      // Ctrl+Enter repetido ou clique duplo nunca gravam duas vezes
+      if (inFlight || h.closed) return;
+      inFlight = true;
+      var p;
+      try { p = o.onOk(h); } catch (e) { inFlight = false; fail(e); return; }
       if (p && p.then) {
         h.busy(true);
-        p.then(function () { if (!h.closed) h.busy(false); }, function (e) { if (!h.closed) h.busy(false); fail(e); });
-      }
+        p.then(function () { inFlight = false; if (!h.closed) h.busy(false); }, function (e) { inFlight = false; if (!h.closed) h.busy(false); fail(e); });
+      } else inFlight = false;
     }
     h.$('[data-act=ok]').addEventListener('click', submit);
     h.el.addEventListener('keydown', function (e) { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); submit(); } });
@@ -270,6 +318,58 @@
     if (el) { el.classList.add('invalid'); el.focus(); el.addEventListener('input', function () { el.classList.remove('invalid'); }, { once: true }); }
     toast(msg, true);
     return Promise.resolve();
+  }
+  /**
+   * Campos de um formulário de edição ligados às chaves do registro: fields = [[id do input, chave, tipo]]
+   * (tipo 'lines' = uma linha por item; 'checks' = checkboxes dentro do elemento). Guarda os valores da
+   * abertura para que a gravação mande só o que o usuário mudou (sem desfazer o que outra pessoa gravou) e,
+   * num conflito, coloca os valores novos do servidor nos campos que o usuário não mexeu.
+   */
+  function fieldTracker(h, fields) {
+    var base = {};
+    function el(f) { return h.$('#' + f[0]); }
+    function norm(f, v) {
+      if (f[2] === 'lines') return (Array.isArray(v) ? v : lines(v)).map(function (x) { return String(x).trim(); }).filter(Boolean).join('\n');
+      if (f[2] === 'checks') return (Array.isArray(v) ? v : []).slice().sort().join(',');
+      return String(v == null ? '' : v).trim();
+    }
+    function read(f) {
+      var e = el(f);
+      if (!e) return undefined;
+      if (f[2] === 'checks') return norm(f, qsa('input[type=checkbox]:checked', e).map(function (x) { return x.value; }));
+      return norm(f, e.value);
+    }
+    function write(f, v) {
+      var e = el(f);
+      if (!e) return;
+      if (f[2] === 'checks') { var ids = v ? v.split(',') : []; qsa('input[type=checkbox]', e).forEach(function (x) { x.checked = ids.indexOf(x.value) >= 0; }); return; }
+      e.value = v;
+    }
+    fields.forEach(function (f) { base[f[1]] = read(f); });
+    var t = {};
+    /** Chaves que o usuário mudou desde a abertura (ou desde o último refresh). */
+    t.changed = function () { return fields.filter(function (f) { var v = read(f); return v !== undefined && v !== base[f[1]]; }).map(function (f) { return f[1]; }); };
+    /** Valor atual (arrays para 'lines'/'checks'). */
+    t.value = function (key) {
+      var f = fields.filter(function (x) { return x[1] === key; })[0];
+      var v = read(f);
+      return f[2] === 'lines' ? (v ? v.split('\n') : []) : f[2] === 'checks' ? (v ? v.split(',') : []) : v;
+    };
+    /** Depois de um conflito: valores novos do servidor nos campos intocados; os que colidem ficam marcados. */
+    t.refresh = function (row) {
+      if (!row) return;
+      fields.forEach(function (f) {
+        if (read(f) === undefined || row[f[1]] === undefined) return;
+        var sv = norm(f, row[f[1]]);
+        if (read(f) === base[f[1]]) { write(f, sv); base[f[1]] = sv; return; }
+        if (sv !== base[f[1]]) {
+          var e = el(f);
+          e.classList.add('conflict-field');
+          e.title = 'Outra pessoa gravou: ' + (f[2] === 'checks' ? 'outros casos afetados' : sv || '(vazio)') + '. Se salvar, vale o seu valor.';
+        }
+      });
+    };
+    return t;
   }
   function fieldHtml(id, label, control, help) {
     return '<div class="row"><label for="' + id + '">' + label + '</label>' + control + (help ? '<div class="help">' + help + '</div>' : '') + '</div>';
@@ -320,6 +420,9 @@
   $('btn-client-mode').addEventListener('click', function () {
     state.clientMode = !state.clientMode;
     lsSet(LS_CLIENT, state.clientMode ? '1' : '0');
+    // a pré-visualização (de qualquer aba) é descartada na hora: nada interno fica à mostra enquanto a nova carrega
+    state.rep.seq++;
+    clearPreview();
     applyClientMode();
     rerenderCurrent();
     toast(state.clientMode ? 'Modo cliente ligado: campos internos ocultos.' : 'Modo cliente desligado.');
@@ -338,7 +441,7 @@
       if (state.clientMode && state.tab === 'historico') state.tab = 'exec';
       if (state.clientMode) state.rep.publico = 'cliente';
       renderPovPage(true);
-    }
+    } else if (state.view === 'admin' && state.adminInfo) renderAdmin();
   }
 
   // ============================================================ boot
@@ -352,6 +455,7 @@
       state.importIncompleto = !!b.import_incompleto;
       state.appVersion = b.app_version;
       $('user-email').textContent = b.user;
+      $('exec-mine-wrap').title = 'Casos cujo Responsável tem o seu e-mail (' + b.user + ')' + (myNameKey() ? ' ou o seu nome ("' + myNameKey() + '")' : '');
       setCatalog(b.catalog);
       state.allPovs = b.povs || [];
       state.povs = state.allPovs;
@@ -449,7 +553,7 @@
     }
     $('pov-list').innerHTML = list.map(function (p) {
       var pr = p.progress, c = p.criterios;
-      var badges = (p.plano_aceito ? '<span class="badge ok">plano aceito</span>' : '') +
+      var badges = (p.plano_aceito ? '<span class="badge ok">plano aceito</span>' : '') + (p.plano_sem_aceite ? '<span class="badge warn">sem aceite formal</span>' : '') +
         (!state.clientMode && p.desfecho_label ? '<span class="badge ' + (p.desfecho === 'tech_win' ? 'ok' : p.desfecho === 'tech_loss' ? 'bad' : '') + '">' + esc(p.desfecho_label) + '</span>' : '');
       var metaParts = [period(p.inicio, p.fim_previsto), p.responsavel ? 'Responsável: ' + p.responsavel : '', !state.clientMode && p.oportunidade ? p.oportunidade : ''].filter(Boolean);
       return '<div class="pov-card" data-pov="' + esc(p.pov_id) + '" tabindex="0" role="button" aria-label="Abrir ' + esc(p.cliente + ' — ' + p.titulo) + '">' +
@@ -493,30 +597,54 @@
       '<datalist id="np-amb-list">' + amb.map(function (a) { return '<option value="' + esc(a) + '">'; }).join('') + '</datalist>' +
       fieldHtml('np-objetivo', 'Objetivo da PoV', textareaHtml('np-objetivo', p.objetivo, { rows: 3, max: LIMITS.long, placeholder: 'o que o cliente quer comprovar e para quem' })) +
       (edit && !state.clientMode ? fieldHtml('np-obs', 'Observações internas', textareaHtml('np-obs', p.observacoes, { rows: 2, max: LIMITS.long, placeholder: 'não vão para documentos do cliente' })) : '');
-    formModal({
+    var tracker = null;
+    var h0 = formModal({
       title: edit ? 'Editar PoV' : 'Nova PoV', sub: edit ? esc(p.cliente + ' — ' + p.titulo) : 'Os critérios de sucesso, o plano e as pendências são definidos nas abas da PoV.',
       body: body, ok: edit ? 'Salvar' : 'Criar PoV', id: 'pov-form',
       onOk: function (h) {
-        var input = {
+        var cur = {
           cliente: fv(h, 'np-cliente'), titulo: fv(h, 'np-titulo'), responsavel: fv(h, 'np-responsavel'), contato_cliente: fv(h, 'np-contato'),
           equipe: fv(h, 'np-equipe'), inicio: fv(h, 'np-inicio'), fim_previsto: fv(h, 'np-fim'), ambiente: fv(h, 'np-ambiente'), objetivo: fv(h, 'np-objetivo'),
         };
-        if (h.$('#np-oportunidade')) input.oportunidade = fv(h, 'np-oportunidade');
-        if (h.$('#np-obs')) input.observacoes = fv(h, 'np-obs');
-        if (input.cliente.length < 2) return invalid(h, 'np-cliente', 'Informe o cliente.');
-        if (input.titulo.length < 2) return invalid(h, 'np-titulo', 'Informe o título da PoV.');
-        if (input.inicio && input.fim_previsto && input.fim_previsto < input.inicio) return invalid(h, 'np-fim', 'O fim previsto é anterior ao início.');
-        // depois de um conflito a PoV é recarregada: vale o atualizado_em mais recente que a tela conhece
-        if (edit) { input.pov_id = p.pov_id; input.expected_atualizado_em = state.povId === p.pov_id ? state.pov.pov.atualizado_em : p.atualizado_em; }
-        return api('apiSavePov', input).catch(edit ? conflictRefresh : function (e) { throw e; }).then(function (view) {
+        if (h.$('#np-oportunidade')) cur.oportunidade = fv(h, 'np-oportunidade');
+        if (h.$('#np-obs')) cur.observacoes = fv(h, 'np-obs');
+        if (cur.cliente.length < 2) return invalid(h, 'np-cliente', 'Informe o cliente.');
+        if (cur.titulo.length < 2) return invalid(h, 'np-titulo', 'Informe o título da PoV.');
+        if (cur.inicio && cur.fim_previsto && cur.fim_previsto < cur.inicio) return invalid(h, 'np-fim', 'O fim previsto é anterior ao início.');
+        if (!edit) {
+          return api('apiSavePov', cur).then(function (view) {
+            h.markClean();
+            h.close();
+            toast('PoV criada. Defina os critérios de sucesso e monte o plano.');
+            enterPov(view, 'plano');
+          });
+        }
+        // edição: manda só o que mudou, para não desfazer o que outra pessoa gravou nos outros campos
+        var changed = tracker.changed();
+        if (!changed.length) { h.markClean(); h.close(); toast('Nenhuma alteração.'); return; }
+        if (editWouldRemoveMe(p, cur)) return invalid(h, 'np-equipe', 'Essa alteração tiraria você da PoV: mantenha seu e-mail em Responsável ou Equipe (ou peça a um administrador).');
+        var input = { pov_id: p.pov_id, expected_atualizado_em: state.povId === p.pov_id ? state.pov.pov.atualizado_em : p.atualizado_em };
+        changed.forEach(function (k) { input[k] = tracker.value(k); });
+        return api('apiSavePov', input).catch(conflictRefreshWith(function (view) { tracker.refresh(view.pov); })).then(function (view) {
           h.markClean();
           h.close();
-          if (edit) { setView(view); toast('PoV atualizada.'); return; }
-          toast('PoV criada. Defina os critérios de sucesso e monte o plano.');
-          enterPov(view, 'plano');
+          setView(view);
+          toast('PoV atualizada.');
         });
       },
     });
+    if (edit) {
+      tracker = fieldTracker(h0, [['np-cliente', 'cliente'], ['np-titulo', 'titulo'], ['np-oportunidade', 'oportunidade'], ['np-responsavel', 'responsavel'],
+        ['np-contato', 'contato_cliente'], ['np-equipe', 'equipe'], ['np-inicio', 'inicio'], ['np-fim', 'fim_previsto'], ['np-ambiente', 'ambiente'],
+        ['np-objetivo', 'objetivo'], ['np-obs', 'observacoes']]);
+    }
+  }
+  /** Quem não é administrador precisa continuar como criador, responsável ou equipe (o servidor também recusa). */
+  function editWouldRemoveMe(pov, cur) {
+    if (state.admin || state.visibilidade === 'todos') return false;
+    var me = String(state.user || '').toLowerCase();
+    if (!me || String(pov.criado_por || '').toLowerCase() === me) return false;
+    return String(cur.responsavel || '').toLowerCase().indexOf(me) < 0 && String(cur.equipe || '').toLowerCase().indexOf(me) < 0;
   }
 
   // ============================================================ página da PoV
@@ -529,7 +657,8 @@
       state.exec = { status: '', mine: false, today: false, q: '', selected: {} };
       state.plan.sel = {};
       state.plan.checked = {};
-      state.rep = { tipo: 'resultados', publico: state.clientMode ? 'cliente' : 'interno', detalhe: null, preview: null, key: '', seq: state.rep.seq + 1, lastSave: null };
+      state.rep = { tipo: 'resultados', publico: state.clientMode ? 'cliente' : 'interno', detalhe: null, preview: null, seq: state.rep.seq + 1, lastSave: null };
+      clearPreview();
     }
     state.pov = view;
     state.povId = view.pov.pov_id;
@@ -553,14 +682,21 @@
     renderCrumbs();
     renderPovPage(false);
   }
-  /** Conflito de concorrência numa gravação (PoV, critério, pendência): recarrega a PoV em segundo plano e repassa o erro. */
-  function conflictRefresh(e) {
-    if (e && /alterad[oa] por/.test(e.message) && state.povId) {
-      api('apiGetPov', state.povId).then(setView).catch(function () { /* o toast do erro original já orienta */ });
-      e = new Error(e.message + ' A tela foi atualizada com a versão atual; confira e salve de novo.');
-    }
-    throw e;
+  /**
+   * Conflito de concorrência numa gravação (PoV, critério, pendência, caso próprio): recarrega a PoV, deixa o
+   * formulário aberto receber os valores novos (onFresh) e repassa o erro com a orientação.
+   */
+  function conflictRefreshWith(onFresh) {
+    return function (e) {
+      if (e && /alterad[oa] por/.test(e.message) && state.povId) {
+        var msg = e.message + ' A tela foi atualizada com a versão atual; confira e salve de novo.';
+        return api('apiGetPov', state.povId).then(function (view) { setView(view); if (onFresh) onFresh(view); }, function () { /* o erro original já orienta */ })
+          .then(function () { throw new Error(msg); });
+      }
+      throw e;
+    };
   }
+  var conflictRefresh = conflictRefreshWith(null);
   function derive() {
     var v = state.pov;
     var d = { items: {}, n: {}, crit: {}, critN: {} };
@@ -584,18 +720,28 @@
     var meta2 = [];
     if (p.contato_cliente) meta2.push('Contato no cliente: ' + esc(p.contato_cliente));
     if (!cm && p.oportunidade) meta2.push('Oportunidade: ' + esc(p.oportunidade));
+    // mesma regra do relatório: sem aceite formal o motivo é anotação interna; no modo cliente o texto passa por redactText
+    function aceiteObs(obs, por) {
+      if (!obs || (cm && !por)) return '';
+      return ' — ' + esc(cm ? redactText(obs).text : obs);
+    }
     var acc = '';
     if (p.plano_aceite_em) {
-      acc += '<div class="m">Plano aceito em <b>' + esc(dateBr(p.plano_aceite_em)) + '</b>' + (p.plano_aceite_por ? ' por <b>' + esc(p.plano_aceite_por) + '</b>' : '') +
-        (p.plano_aceite_obs ? ' — ' + esc(p.plano_aceite_obs) : '') + '</div>';
+      acc += '<div class="m" id="pov-aceite-plano">' + (p.plano_aceite_por
+        ? 'Plano aceito em <b>' + esc(dateBr(p.plano_aceite_em)) + '</b> por <b>' + esc(p.plano_aceite_por) + '</b>'
+        : 'Execução iniciada em <b>' + esc(dateBr(p.plano_aceite_em)) + '</b> sem aceite formal do plano') + aceiteObs(p.plano_aceite_obs, p.plano_aceite_por) + '</div>';
     }
-    if (p.resultado_aceite_em) {
-      acc += '<div class="m">Resultado aceito em <b>' + esc(dateBr(p.resultado_aceite_em)) + '</b>' + (p.resultado_aceite_por ? ' por <b>' + esc(p.resultado_aceite_por) + '</b>' : '') +
-        (p.resultado_aceite_obs ? ' — ' + esc(p.resultado_aceite_obs) : '') + '</div>';
+    // o aceite do resultado só vale para a PoV encerrada (reaberta, ela ainda está mudando)
+    if (p.status === 'done' && p.resultado_aceite_em) {
+      acc += '<div class="m" id="pov-aceite-resultado">' + (p.resultado_aceite_por
+        ? 'Resultado aceito em <b>' + esc(dateBr(p.resultado_aceite_em)) + '</b> por <b>' + esc(p.resultado_aceite_por) + '</b>'
+        : 'PoV encerrada em <b>' + esc(dateBr(p.resultado_aceite_em)) + '</b> sem aceite formal') + aceiteObs(p.resultado_aceite_obs, p.resultado_aceite_por) + '</div>';
     }
-    if (!cm && p.desfecho) acc += '<div class="m">Desfecho: <b>' + esc(v.desfecho_label) + '</b>' + (p.competidor ? ' · contra ' + esc(p.competidor) : '') + '</div>';
-    var badges = (p.plano_aceite_em ? '<span class="badge ok">plano aceito</span>' : '') +
-      (!cm && p.desfecho ? '<span class="badge ' + (p.desfecho === 'tech_win' ? 'ok' : p.desfecho === 'tech_loss' ? 'bad' : '') + '">' + esc(v.desfecho_label) + '</span>' : '');
+    if (!cm && v.desfecho_label) acc += '<div class="m">Desfecho: <b>' + esc(v.desfecho_label) + '</b>' + (p.competidor ? ' · contra ' + esc(p.competidor) : '') + '</div>';
+    var badges = (p.plano_aceite_em && p.plano_aceite_por ? '<span class="badge ok">plano aceito</span>' : '') +
+      (p.plano_aceite_em && !p.plano_aceite_por ? '<span class="badge warn">sem aceite formal</span>' : '') +
+      (!cm && v.desfecho_label ? '<span class="badge ' + (p.desfecho === 'tech_win' ? 'ok' : p.desfecho === 'tech_loss' ? 'bad' : '') + '">' + esc(v.desfecho_label) + '</span>' : '');
+    fillTeamEmails(p);
     var acts = '<button id="btn-pov-edit" class="ghost"' + (v.locked ? ' disabled title="Reabra a PoV para editar"' : '') + '>Editar</button>';
     if (p.status === 'planning') acts += '<button id="btn-accept-plan" class="primary">Registrar aceite do plano</button>';
     if (p.status === 'running') acts += '<button id="btn-close-pov" class="primary">Encerrar PoV</button>';
@@ -605,7 +751,7 @@
       '<div class="pov-head"><div class="ph-main">' +
       '<div class="ph-title"><h1><span class="c">' + esc(p.cliente) + '</span> — ' + esc(p.titulo) + '</h1><span class="st ' + esc(p.status) + '">' + esc(v.pov_status_label) + '</span>' + badges + '</div>' +
       '<div class="m">' + meta1.join(' <span class="sep">·</span> ') + '</div>' + (meta2.length ? '<div class="m">' + meta2.join(' <span class="sep">·</span> ') + '</div>' : '') + acc +
-      (p.objetivo ? '<div class="objetivo"><span class="k">Objetivo</span> ' + esc(p.objetivo) + '</div>' : '') +
+      (p.objetivo ? '<div class="objetivo"><span class="k">Objetivo</span> ' + esc(cm ? redactText(p.objetivo).text : p.objetivo) + '</div>' : '') +
       (!cm && p.observacoes ? '<div class="objetivo internal"><span class="k">Observações internas</span> ' + esc(p.observacoes) + '</div>' : '') +
       (v.locked ? '<div class="locked-note">PoV ' + esc(v.pov_status_label.toLowerCase()) + ': tudo fica somente leitura. Use "Reabrir" para voltar a editar.</div>' : '') +
       '</div><div class="ph-actions">' + acts + '</div></div>';
@@ -615,6 +761,17 @@
     on('btn-close-pov', openClosePov);
     on('btn-reopen', reopenPov);
     on('btn-cancel-pov', cancelPov);
+  }
+  /** E-mails da equipe (responsável e equipe da PoV, e o próprio usuário) para os campos Responsável. */
+  function teamEmails(p) {
+    var out = [];
+    [p.responsavel, p.equipe, state.user].forEach(function (t) {
+      (String(t || '').toLowerCase().match(/[a-z0-9._%+'-]+@[a-z0-9.-]+\.[a-z]{2,}/g) || []).forEach(function (e) { if (out.indexOf(e) < 0) out.push(e); });
+    });
+    return out;
+  }
+  function fillTeamEmails(p) {
+    $('team-emails').innerHTML = teamEmails(p).map(function (e) { return '<option value="' + esc(e) + '">'; }).join('');
   }
   function renderTabs() {
     qsa('#pov-tabs button').forEach(function (b) {
@@ -754,10 +911,10 @@
     return b;
   }
   function execFiltered(items) {
-    var F = state.exec, q = foldText(F.q).trim(), me = String(state.user || '').toLowerCase(), today = todayIso();
+    var F = state.exec, q = foldText(F.q).trim(), today = todayIso();
     return items.filter(function (it) {
       if (F.status && it.status !== F.status) return false;
-      if (F.mine && String(it.responsavel || '').toLowerCase().indexOf(me) < 0) return false;
+      if (F.mine && !isMine(it.responsavel)) return false;
       if (F.today && it.data_prevista !== today) return false;
       if (q) {
         var hay = foldText([it.name, state.clientMode ? '' : it.name_en, it.responsavel].join(' '));
@@ -779,11 +936,23 @@
     renderExecFilter();
     renderExecList();
   }
+  /** Nome provável do usuário a partir do e-mail ("ana.souza@…" → "ana souza"), para o filtro "meus". */
+  function myNameKey() { return foldText(String(state.user || '').split('@')[0].replace(/[._-]+/g, ' ')).trim(); }
+  /** O Responsável é o usuário? Casa pelo e-mail ou pelo nome derivado do e-mail (palavras inteiras). */
+  function isMine(resp) {
+    var me = String(state.user || '').toLowerCase(), r = String(resp || '');
+    if (!me) return false;
+    if (r.toLowerCase().indexOf(me) >= 0) return true;
+    var name = myNameKey();
+    if (!name) return false;
+    var re = new RegExp('(^|[^a-z0-9])' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '($|[^a-z0-9])');
+    return re.test(foldText(r));
+  }
   function renderExecFilter() {
     var p = state.pov.progress, F = state.exec;
-    $('exec-filter').innerHTML = '<button type="button" data-st=""' + (F.status ? '' : ' class="on"') + '>Todos<span class="n">' + p.total + '</span></button>' +
+    $('exec-filter').innerHTML = '<button type="button" data-st=""' + (F.status ? '' : ' class="on"') + ' aria-pressed="' + !F.status + '">Todos<span class="n">' + p.total + '</span></button>' +
       EXEC_STATUSES.map(function (s) {
-        return '<button type="button" data-st="' + s + '" class="st-' + s + (F.status === s ? ' on' : '') + '">' + esc(execStatusLabel(s)) + '<span class="n">' + (p.por_status[s] || 0) + '</span></button>';
+        return '<button type="button" data-st="' + s + '" class="st-' + s + (F.status === s ? ' on' : '') + '" aria-pressed="' + (F.status === s) + '">' + esc(execStatusLabel(s)) + '<span class="n">' + (p.por_status[s] || 0) + '</span></button>';
       }).join('');
   }
   $('exec-filter').addEventListener('click', function (e) {
@@ -920,7 +1089,7 @@
     if (!b) return;
     if (b.id === 'bulk-clear') { state.exec.selected = {}; renderExecList(); }
     else if (b.id === 'bulk-resp') {
-      askText('Responsável pelos casos selecionados', { label: 'Responsável (nome ou e-mail; vazio limpa)', max: LIMITS.short, ok: 'Aplicar' })
+      askText('Responsável pelos casos selecionados', { label: 'Responsável (de preferência o e-mail; vazio limpa)', max: LIMITS.short, ok: 'Aplicar', list: 'team-emails' })
         .then(function (v) { if (v !== null) runBulk({ responsavel: v }); });
     } else if (b.id === 'bulk-date') {
       var h = formModal({
@@ -958,9 +1127,8 @@
   /** Remove execuções do plano (com motivo depois do aceite). Resolve true quando removeu. */
   function removeExecs(ids) {
     if (!ids.length) return Promise.resolve(false);
-    var accepted = !!state.pov.pov.plano_aceite_em;
-    var ask = accepted
-      ? askText('Remover do plano', { sub: 'O plano já foi aceito pelo cliente: a remoção de ' + plural(ids.length, 'caso', 'casos') + ' fica registrada como mudança de escopo. O que já foi registrado é preservado.',
+    var ask = afterBaseline()
+      ? askText('Remover do plano', { sub: esc(scopeLead() + ' a remoção de ' + plural(ids.length, 'caso', 'casos') + ' fica registrada como mudança de escopo. O que já foi registrado é preservado.'),
         label: 'Motivo *', min: 3, multiline: true, ok: 'Remover do plano', danger: true })
       : askConfirm('Remover do plano?', plural(ids.length, 'caso sai', 'casos saem') + ' do plano. O que já foi registrado fica guardado; incluir de novo pelo Plano reativa a mesma linha.', { ok: 'Remover', danger: true })
         .then(function (ok) { return ok ? '' : null; });
@@ -1017,7 +1185,7 @@
         (ctx.locked ? '' : '<button type="button" class="danger" id="ep-remove">Remover do plano</button>') +
         '<button type="button" class="ghost" id="ep-cancel">' + (ctx.locked ? 'Fechar' : 'Cancelar') + '</button>' +
         (ctx.locked ? '' : '<button type="button" class="primary" id="ep-save">Salvar</button>'),
-      isDirty: function () { return !ctx.locked && JSON.stringify(ctx.draft) !== ctx.orig; },
+      isDirty: function () { return !ctx.locked && (JSON.stringify(ctx.draft) !== ctx.orig || pendingEvidence(ctx)); },
     });
     ctx.h = h;
     renderPanel(ctx);
@@ -1112,7 +1280,14 @@
   function attemptsHtml(ctx) {
     var list = (state.pov.tentativas || {})[ctx.execId] || [];
     if (!list.length) return '';
-    var cm = state.clientMode;
+    var cm = state.clientMode, it = ctx.item;
+    if (cm) {
+      // o cliente vê só a linha de re-teste, como no relatório (sem resultados e executores das tentativas anteriores)
+      if (!(it.tentativas > 1)) return '';
+      var last = list[list.length - 1];
+      return '<div class="notice reteste" id="ep-reteste">Re-executado: tentativa ' + esc(it.tentativas) + ' em ' + esc(fmt(last.em, 'date')) +
+        (it.primeiro_status && it.primeiro_status !== it.status ? ' (primeiro resultado: ' + esc(execStatusLabel(it.primeiro_status)) + ')' : '') + '</div>';
+    }
     return docSec('Tentativas', '<ul class="attempts">' + list.map(function (t) {
       return '<li><span class="st ' + esc(t.status) + '">#' + esc(t.n) + ' ' + esc(t.status_label) + '</span> <span class="muted small">' + esc(dt(t.em)) + (t.executado_por ? ' · ' + esc(t.executado_por) : '') + '</span>' +
         (!cm && (t.causa_label || t.referencia) ? '<div class="small">' + esc([t.causa_label ? 'causa: ' + t.causa_label : '', t.referencia].filter(Boolean).join(' · ')) + '</div>' : '') +
@@ -1140,13 +1315,13 @@
   function panelFormHtml(ctx, f) {
     var d = ctx.draft, dis = ctx.locked ? ' disabled' : '', cm = state.clientMode;
     var h = '';
-    h += '<div class="ep-sec"><label>Status</label><div class="seg seg-status" id="ep-status">' + EXEC_STATUSES.map(function (s) {
+    h += '<div class="ep-sec"><label id="ep-status-l">Status</label><div class="seg seg-status" id="ep-status" role="group" aria-labelledby="ep-status-l">' + EXEC_STATUSES.map(function (s) {
       return '<button type="button" data-st="' + s + '" class="' + s + (d.status === s ? ' on' : '') + '"' + (d.status === s ? ' data-autofocus' : '') + ' aria-pressed="' + (d.status === s) + '"' + dis + '>' + esc(execStatusLabel(s)) + '</button>';
     }).join('') + '</div><div class="hint" id="ep-hint"></div></div>';
     h += '<div id="ep-blocked"></div><div id="ep-cause"></div>';
     h += '<div class="row3">' +
       '<div><label for="ep-prio">Prioridade</label><select id="ep-prio" data-f="prioridade"' + dis + '>' + PRIORITIES.map(function (p) { return '<option value="' + p + '"' + (d.prioridade === p ? ' selected' : '') + '>' + esc(priorityLabel(p)) + '</option>'; }).join('') + '</select></div>' +
-      '<div><label for="ep-resp">Responsável</label><input type="text" id="ep-resp" data-f="responsavel" maxlength="' + LIMITS.short + '" value="' + esc(d.responsavel) + '"' + dis + '></div>' +
+      '<div><label for="ep-resp">Responsável</label><input type="text" id="ep-resp" data-f="responsavel" list="team-emails" placeholder="e-mail da equipe" maxlength="' + LIMITS.short + '" value="' + esc(d.responsavel) + '"' + dis + '></div>' +
       '<div><label for="ep-data">Data prevista</label><input type="date" id="ep-data" data-f="data_prevista" value="' + esc(d.data_prevista) + '"' + dis + '></div></div>';
     var crits = state.pov.criterios.list;
     h += '<div class="ep-sec"><label>Critérios de sucesso</label>' + (crits.length ? '<div class="crit-chips">' + crits.map(function (c) {
@@ -1216,7 +1391,7 @@
     h += group('Resultado esperado', 'out', of('out').map(function (c) { return checklistItemHtml(ctx, c, f); }).join(''));
     h += group('Métricas', 'met', of('met').map(function (c) { return checklistItemHtml(ctx, c, f); }).join(''));
     var rem = d.checklist.filter(function (c) { return c.removido; });
-    if (rem.length) {
+    if (rem.length && !state.clientMode) {
       h += '<div class="ck-group ck-removed"><div class="ck-gt">Itens que saíram da biblioteca (somente leitura)</div>' + rem.map(function (c) {
         return '<div class="ck-item removed"><div class="txt pre">' + esc(state.clientMode ? redactText(c.txt).text : c.txt) + '</div><div class="small muted">' + esc(CHECK_TYPE_PT[c.t] || c.t) + ' · ' +
           esc(checkMarkLabel(c.t, c.ok)) + (c.obs ? ' · ' + esc(c.obs) : '') + '</div></div>';
@@ -1333,6 +1508,7 @@
     function onField(e) {
       var t = e.target;
       if (ctx.locked) return;
+      if (t.id === 'ep-ev-url') t.classList.remove('invalid');
       var f = t.getAttribute('data-f');
       if (f) { d()[f] = t.value; return; }
       var np = t.getAttribute('data-np');
@@ -1414,8 +1590,24 @@
     }
     return input;
   }
+  /** Rótulo ou link de evidência digitado e ainda não "Adicionado". */
+  function pendingEvidence(ctx) {
+    var l = ctx.h && ctx.h.$('#ep-ev-label'), u = ctx.h && ctx.h.$('#ep-ev-url');
+    return !!((l && l.value.trim()) || (u && u.value.trim()));
+  }
   function saveExec(ctx, expected) {
     if (ctx.saving) return;
+    // evidência digitada e não adicionada: entra agora (link inválido ou só o rótulo interrompem o salvamento)
+    var evUrl = ctx.h.$('#ep-ev-url'), evLabel = ctx.h.$('#ep-ev-label');
+    if (evUrl && evUrl.value.trim()) {
+      addEvidence(ctx);
+      if (evUrl.value.trim()) return;
+    } else if (evLabel && evLabel.value.trim()) {
+      evUrl.classList.add('invalid');
+      evUrl.focus();
+      toast('A evidência "' + evLabel.value.trim() + '" está sem link: cole o link (http/https) ou apague o rótulo antes de salvar.', true);
+      return;
+    }
     var input = buildExecInput(ctx);
     input.expected_atualizado_em = expected !== undefined ? expected : ctx.item.atualizado_em;
     ctx.saving = true;
@@ -1443,7 +1635,8 @@
     var v = state.pov, P = state.plan, locked = v.locked;
     var note = '';
     if (locked) note = '<div class="banner">PoV ' + esc(v.pov_status_label.toLowerCase()) + ': reabra a PoV para mudar o plano.</div>';
-    else if (v.pov.plano_aceite_em) note = '<div class="banner info">O plano foi aceito pelo cliente em ' + esc(dateBr(v.pov.plano_aceite_em)) + ': incluir ou remover casos pede um motivo e fica registrado como mudança de escopo.</div>';
+    else if (v.pov.plano_aceite_em && v.pov.plano_aceite_por) note = '<div class="banner info" id="scope-banner">O plano foi aceito pelo cliente em ' + esc(dateBr(v.pov.plano_aceite_em)) + ': incluir ou remover casos pede um motivo e fica registrado como mudança de escopo.</div>';
+    else if (v.pov.plano_aceite_em) note = '<div class="banner info" id="scope-banner">A execução começou em ' + esc(dateBr(v.pov.plano_aceite_em)) + ' sem aceite formal do plano: depois do início da execução, incluir ou remover casos pede um motivo e fica registrado como mudança de escopo.</div>';
     $('plan-note').innerHTML = note;
     var ind = $('plan-industry');
     if (ind.getAttribute('data-for') !== String(state.catalog ? state.catalog.meta.library_export_date + state.catalog.cases.length : '')) {
@@ -1520,7 +1713,7 @@
         '<input type="checkbox" class="psel" aria-label="Selecionar ' + esc(c.name) + '"' + (chk ? ' checked' : '') + (inP || locked ? ' disabled' : '') + '>' +
         '<div class="pi-body"><div class="case-name">' + esc(c.name) + ' ' + badges + '</div>' +
         (!cm && c.name_en && c.name_en !== c.name ? '<div class="case-en">' + esc(c.name_en) + '</div>' : '') +
-        (c.summary ? '<div class="case-summary">' + esc(c.summary) + '</div>' : '') + '<div class="meta">' + esc(meta) + '</div></div></div>';
+        (c.summary ? '<div class="case-summary">' + esc(cm ? redactText(c.summary).text : c.summary) + '</div>' : '') + '<div class="meta">' + esc(meta) + '</div></div></div>';
     }).join('');
     $('plan-list').innerHTML = html || '<div class="empty small">Nenhum caso com esses filtros' + (Object.keys(P.sel).length ? ' nos nós selecionados' : '') + '.</div>';
     planSummary(r);
@@ -1556,6 +1749,8 @@
     t.classList.toggle('open', open);
     t.setAttribute('aria-expanded', open ? 'true' : 'false');
     tw.textContent = open ? '▾' : '▸';
+    var nm = t.querySelector('.nm');
+    tw.setAttribute('aria-label', (open ? 'Recolher ' : 'Expandir ') + (nm ? nm.textContent : ''));
   });
   $('tree').addEventListener('change', function (e) {
     if (!e.target.classList.contains('tsel')) return;
@@ -1599,9 +1794,8 @@
     var ids = Object.keys(state.plan.checked);
     if (!ids.length) return;
     if (ids.length > LIMITS.planBatch) { toast('No máximo ' + LIMITS.planBatch + ' casos por inclusão. Refine a seleção.', true); return; }
-    var accepted = !!state.pov.pov.plano_aceite_em;
-    var ask = accepted
-      ? askText('Incluir no plano aceito', { sub: 'O plano já foi aceito pelo cliente: a inclusão de ' + plural(ids.length, 'caso', 'casos') + ' fica registrada como mudança de escopo.', label: 'Motivo *', min: 3, multiline: true, ok: 'Incluir' })
+    var ask = afterBaseline()
+      ? askText('Incluir no plano', { sub: esc(scopeLead() + ' a inclusão de ' + plural(ids.length, 'caso', 'casos') + ' fica registrada como mudança de escopo.'), label: 'Motivo *', min: 3, multiline: true, ok: 'Incluir' })
       : Promise.resolve('');
     ask.then(function (motivo) {
       if (motivo === null) return;
@@ -1629,23 +1823,49 @@
     v.in_plan.forEach(function (id) { inPlan[id] = true; });
     $('custom-list').innerHTML = list.length ? list.map(function (c) {
       var uc = c.use_case_id && cat.byId[c.use_case_id] ? cat.byId[c.use_case_id].name : 'sem use case';
+      var resumo = state.clientMode ? redactText(c.resumo).text : c.resumo;
       return '<div class="custom-item"><div class="ci-body"><div class="case-name">' + esc(c.nome) + ' <span class="badge custom">definido com o cliente</span> <span class="faint small">v' + esc(c.versao) + '</span></div>' +
-        (c.resumo ? '<div class="case-summary">' + esc(c.resumo) + '</div>' : '') +
+        (resumo ? '<div class="case-summary">' + esc(resumo) + '</div>' : '') +
         '<div class="meta">' + esc([uc, plural((c.objetivos || []).length, 'passo', 'passos'), plural((c.metricas || []).length, 'métrica', 'métricas'), inPlan[c.caso_id] ? 'no plano' : 'fora do plano'].join(' · ')) + '</div></div>' +
-        '<button type="button" class="small ghost" data-edit-custom="' + esc(c.caso_id) + '"' + (v.locked ? ' disabled' : '') + '>Editar</button></div>';
+        '<div class="ci-actions">' + (inPlan[c.caso_id] ? '' : '<button type="button" class="small" data-include-custom="' + esc(c.caso_id) + '"' + (v.locked ? ' disabled' : '') + '>Incluir no plano</button>') +
+        '<button type="button" class="small ghost" data-edit-custom="' + esc(c.caso_id) + '"' + (v.locked ? ' disabled' : '') + '>Editar</button></div></div>';
     }).join('') : '<div class="muted small">Nenhum caso definido com o cliente nesta PoV.</div>';
   }
   $('custom-list').addEventListener('click', function (e) {
+    var inc = e.target.closest('[data-include-custom]');
+    if (inc) { includeCustom(inc.getAttribute('data-include-custom')); return; }
     var b = e.target.closest('[data-edit-custom]');
     if (!b) return;
     var c = (state.pov.casos_proprios || []).filter(function (x) { return x.caso_id === b.getAttribute('data-edit-custom'); })[0];
     if (c) openCustomForm(c);
   });
+  /** Um caso definido com o cliente que saiu do plano volta (a mesma execução é reativada, com o que já foi registrado). */
+  function includeCustom(casoId) {
+    var c = (state.pov.casos_proprios || []).filter(function (x) { return x.caso_id === casoId; })[0];
+    if (!c || state.pov.locked) return;
+    var ask = afterBaseline()
+      ? askText('Incluir no plano', { sub: esc(scopeLead() + ' a inclusão de "' + c.nome + '" fica registrada como mudança de escopo.'), label: 'Motivo *', min: 3, multiline: true, ok: 'Incluir' })
+      : Promise.resolve('');
+    ask.then(function (motivo) {
+      if (motivo === null) return;
+      return api('apiAddToPlan', state.povId, [casoId], c.use_case_id ? [c.use_case_id] : [], motivo).then(function (res) {
+        setView(res.view);
+        var r = res.result;
+        toast(r.reactivated ? 'Caso reincluído no plano, com o que já tinha sido registrado.' : r.added ? 'Caso incluído no plano.' : r.skipped ? 'O caso já estava no plano.' : 'Nada mudou.');
+      });
+    }).catch(fail);
+  }
+  /** O plano tem linha de base (aceite formal ou início sem aceite)? Então mudar o escopo pede motivo. */
+  function afterBaseline() { return !!state.pov.pov.plano_aceite_em; }
+  /** Começo da frase sobre mudança de escopo, conforme houve aceite formal ou não. */
+  function scopeLead() {
+    return state.pov.pov.plano_aceite_por ? 'O plano já foi aceito pelo cliente:' : 'Depois do início da execução (sem aceite formal do plano),';
+  }
   $('btn-custom-new').addEventListener('click', function () { openCustomForm(null); });
   function openCustomForm(c) {
     var edit = !!c, v = state.pov;
     c = c || {};
-    var needMotivo = !edit && !!v.pov.plano_aceite_em;
+    var needMotivo = !edit && afterBaseline();
     var body = fieldHtml('cc-nome', 'Nome *', inputHtml('cc-nome', c.nome, { max: LIMITS.short, placeholder: 'ex.: Envio dos logs do firewall para o SIEM do cliente' })) +
       fieldHtml('cc-resumo', 'Resumo', textareaHtml('cc-resumo', c.resumo, { rows: 2, max: LIMITS.obs })) +
       fieldHtml('cc-uc', 'Use case (agrupa o caso no plano e no relatório)', selectHtml('cc-uc', [['', 'Sem use case']].concat(cat.ucNodes.map(function (u) { return [u.id, u.label]; })), c.use_case_id || '')) +
@@ -1653,8 +1873,10 @@
       fieldHtml('cc-esperado', 'Resultado esperado', textareaHtml('cc-esperado', c.resultado_esperado, { rows: 2, max: LIMITS.long })) +
       fieldHtml('cc-metricas', 'Métricas (uma por linha)', textareaHtml('cc-metricas', (c.metricas || []).join('\n'), { rows: 2, placeholder: 'ex.: Latência até o SIEM (min)' })) +
       fieldHtml('cc-como', 'Como testar', textareaHtml('cc-como', c.como_testar, { rows: 3, max: LIMITS.long })) +
-      (needMotivo ? fieldHtml('cc-motivo', 'Motivo da inclusão *', textareaHtml('cc-motivo', '', { rows: 2, max: LIMITS.medium }), 'O plano já foi aceito pelo cliente: a inclusão fica registrada como mudança de escopo.') : '');
-    formModal({
+      (needMotivo ? fieldHtml('cc-motivo', 'Motivo da inclusão *', textareaHtml('cc-motivo', '', { rows: 2, max: LIMITS.medium }), esc(scopeLead() + ' a inclusão fica registrada como mudança de escopo.')) : '');
+    // edição: o token é o da abertura (só muda quando os campos são atualizados com a versão do servidor)
+    var token = c.atualizado_em || '', tracker = null;
+    var h0 = formModal({
       title: edit ? 'Editar caso definido com o cliente' : 'Novo caso definido com o cliente', wide: false, cls: 'medium', id: 'custom-form',
       sub: edit ? 'Mudar um texto avaliável cria uma nova versão; o checklist das execuções se ajusta.' : 'O caso entra no plano desta PoV ao ser criado e aparece marcado como "definido com o cliente".',
       body: body, ok: edit ? 'Salvar' : 'Criar e incluir no plano',
@@ -1663,12 +1885,22 @@
           resultado_esperado: fv(h, 'cc-esperado'), metricas: lines(h.$('#cc-metricas').value), como_testar: fv(h, 'cc-como') };
         if (input.nome.length < 3) return invalid(h, 'cc-nome', 'Dê um nome ao caso.');
         if (!input.objetivos.length && !input.resultado_esperado) return invalid(h, 'cc-passos', 'Informe ao menos um passo ou o resultado esperado.');
-        if (edit) input.caso_id = c.caso_id;
+        if (edit) {
+          if (!tracker.changed().length) { h.markClean(); h.close(); toast('Nenhuma alteração.'); return; }
+          input.caso_id = c.caso_id;
+          input.expected_atualizado_em = token;
+        }
         if (needMotivo) {
           input.motivo = fv(h, 'cc-motivo');
           if (input.motivo.length < 3) return invalid(h, 'cc-motivo', 'Informe o motivo da mudança de escopo.');
         }
-        return api('apiSaveCustomCase', state.povId, input).then(function (view) {
+        var onFresh = function (view) {
+          var row = (view.casos_proprios || []).filter(function (x) { return x.caso_id === c.caso_id; })[0];
+          if (!row || !tracker) return;
+          tracker.refresh(row);
+          token = row.atualizado_em || token;
+        };
+        return api('apiSaveCustomCase', state.povId, input).catch(conflictRefreshWith(edit ? onFresh : null)).then(function (view) {
           h.markClean();
           h.close();
           if (!edit) { state.tab = 'exec'; state.tabByPov[state.povId] = 'exec'; }
@@ -1678,6 +1910,10 @@
         });
       },
     });
+    if (edit) {
+      tracker = fieldTracker(h0, [['cc-nome', 'nome'], ['cc-resumo', 'resumo'], ['cc-uc', 'use_case_id'], ['cc-passos', 'objetivos', 'lines'],
+        ['cc-esperado', 'resultado_esperado'], ['cc-metricas', 'metricas', 'lines'], ['cc-como', 'como_testar']]);
+    }
   }
 
   // ============================================================ aba Critérios
@@ -1727,8 +1963,8 @@
     }
   });
   function openCritForm(c) {
-    var edit = !!c;
-    formModal({
+    var edit = !!c, tracker = null;
+    var h0 = formModal({
       title: edit ? 'Editar critério C' + c.n : 'Novo critério de sucesso', cls: 'narrow', id: 'crit-form',
       sub: 'O que o cliente combinou que precisa ver para considerar a PoV um sucesso.',
       body: fieldHtml('cr-texto', 'Critério *', textareaHtml('cr-texto', c ? c.texto : '', { rows: 3, max: LIMITS.medium, placeholder: 'ex.: Bloquear malware desconhecido em até 5 minutos' })) +
@@ -1737,10 +1973,20 @@
       onOk: function (h) {
         var input = { texto: fv(h, 'cr-texto'), peso: h.$('#cr-peso').value };
         if (input.texto.length < 3) return invalid(h, 'cr-texto', 'Descreva o critério de sucesso.');
-        if (edit) { input.crit_id = c.crit_id; input.expected_atualizado_em = (state.d.crit[c.crit_id] || c).atualizado_em; }
-        return api('apiSaveCriterion', state.povId, input).catch(conflictRefresh).then(function (view) { h.markClean(); h.close(); setView(view); toast(edit ? 'Critério atualizado.' : 'Critério adicionado.'); });
+        if (edit) {
+          // o texto sempre vai (o servidor exige); depois de um conflito ele já foi atualizado se o usuário não mexeu
+          var changed = tracker.changed();
+          if (!changed.length) { h.markClean(); h.close(); toast('Nenhuma alteração.'); return; }
+          if (changed.indexOf('peso') < 0) delete input.peso;
+          input.crit_id = c.crit_id;
+          input.expected_atualizado_em = (state.d.crit[c.crit_id] || c).atualizado_em;
+        }
+        var onFresh = function (view) { tracker && tracker.refresh(view.criterios.list.filter(function (x) { return x.crit_id === c.crit_id; })[0]); };
+        return api('apiSaveCriterion', state.povId, input).catch(conflictRefreshWith(edit ? onFresh : null))
+          .then(function (view) { h.markClean(); h.close(); setView(view); toast(edit ? 'Critério atualizado.' : 'Critério adicionado.'); });
       },
     });
+    if (edit) tracker = fieldTracker(h0, [['cr-texto', 'texto'], ['cr-peso', 'peso']]);
   }
   function openVerdictForm(c) {
     var h = formModal({
@@ -1815,27 +2061,44 @@
     p = p || { responsavel_tipo: 'cliente', exec_ids: [] };
     var items = [];
     state.pov.groups.forEach(function (g) { g.items.forEach(function (it) { items.push(it); }); });
+    // vínculos com execuções fora do plano continuam (marcados); desmarcar é que desfaz o vínculo
+    var aligned = (p.casos || []).length === (p.exec_ids || []).length;
+    var outside = (p.exec_ids || []).map(function (id, i) { return { id: id, name: aligned ? p.casos[i] : '' }; }).filter(function (x) { return !state.d.items[x.id]; });
     var body = fieldHtml('pd-desc', 'O que falta *', textareaHtml('pd-desc', p.descricao, { rows: 2, max: LIMITS.medium, placeholder: 'ex.: Liberar a porta 443 no firewall do cliente' })) +
       '<div class="row3">' + fieldHtml('pd-tipo', 'Responsável', selectHtml('pd-tipo', PENDING_OWNERS.map(function (o) { return [o, pendingOwnerLabel(o)]; }), p.responsavel_tipo)) +
       fieldHtml('pd-nome', 'Nome', inputHtml('pd-nome', p.responsavel_nome, { max: LIMITS.short, placeholder: 'quem resolve' })) +
       fieldHtml('pd-prazo', 'Prazo', inputHtml('pd-prazo', p.prazo, { type: 'date' })) + '</div>' +
-      '<div class="row"><label>Casos afetados</label><div class="check-list" id="pd-casos">' + (items.length ? items.map(function (it) {
-        return '<label class="check"><input type="checkbox" value="' + esc(it.exec_id) + '"' + (has(p.exec_ids, it.exec_id) ? ' checked' : '') + '> #' + state.d.n[it.exec_id] + ' ' + esc(it.name) + ' <span class="st ' + esc(it.status) + '">' + esc(it.status_label) + '</span></label>';
-      }).join('') : '<span class="muted small">O plano não tem casos.</span>') + '</div></div>';
-    formModal({
+      '<div class="row"><label>Casos afetados</label><div class="check-list" id="pd-casos">' + (function () {
+        var rows = items.map(function (it) {
+          return '<label class="check"><input type="checkbox" value="' + esc(it.exec_id) + '"' + (has(p.exec_ids, it.exec_id) ? ' checked' : '') + '> #' + state.d.n[it.exec_id] + ' ' + esc(it.name) +
+            ' <span class="st ' + esc(it.status) + '">' + esc(it.status_label) + '</span></label>';
+        }).concat(outside.map(function (x) {
+          return '<label class="check"><input type="checkbox" value="' + esc(x.id) + '" checked> ' + esc(x.name || 'caso') + ' <span class="badge warn">fora do plano</span></label>';
+        }));
+        return rows.length ? rows.join('') : '<span class="muted small">O plano não tem casos.</span>';
+      })() + '</div></div>';
+    var tracker = null;
+    var h0 = formModal({
       title: edit ? 'Editar pendência' : 'Nova pendência', cls: 'medium', id: 'pend-form', body: body, ok: edit ? 'Salvar' : 'Registrar pendência',
       onOk: function (h) {
         var input = { descricao: fv(h, 'pd-desc'), responsavel_tipo: h.$('#pd-tipo').value, responsavel_nome: fv(h, 'pd-nome'), prazo: fv(h, 'pd-prazo'),
           exec_ids: qsa('#pd-casos input:checked', h.el).map(function (x) { return x.value; }) };
         if (input.descricao.length < 3) return invalid(h, 'pd-desc', 'Descreva a pendência (o que falta).');
         if (edit) {
+          // só o que mudou: um retry depois de conflito não desfaz o que outra pessoa gravou
+          var changed = tracker.changed();
+          if (!changed.length) { h.markClean(); h.close(); toast('Nenhuma alteração.'); return; }
           var cur = state.pov.pendencias.filter(function (x) { return x.pend_id === p.pend_id; })[0] || p;
-          input.pend_id = p.pend_id;
-          input.expected_atualizado_em = cur.atualizado_em;
+          var partial = { pend_id: p.pend_id, expected_atualizado_em: cur.atualizado_em };
+          changed.forEach(function (k) { partial[k] = input[k]; });
+          input = partial;
         }
-        return api('apiSavePendencia', state.povId, input).catch(conflictRefresh).then(function (view) { h.markClean(); h.close(); setView(view); toast(edit ? 'Pendência atualizada.' : 'Pendência registrada.'); });
+        var onFresh = function (view) { tracker && tracker.refresh(view.pendencias.filter(function (x) { return x.pend_id === p.pend_id; })[0]); };
+        return api('apiSavePendencia', state.povId, input).catch(conflictRefreshWith(edit ? onFresh : null))
+          .then(function (view) { h.markClean(); h.close(); setView(view); toast(edit ? 'Pendência atualizada.' : 'Pendência registrada.'); });
       },
     });
+    if (edit) tracker = fieldTracker(h0, [['pd-desc', 'descricao'], ['pd-tipo', 'responsavel_tipo'], ['pd-nome', 'responsavel_nome'], ['pd-prazo', 'prazo'], ['pd-casos', 'exec_ids', 'checks']]);
   }
 
   // ============================================================ aba Relatório
@@ -1854,10 +2117,11 @@
   function renderRep(tabChanged) {
     var R = state.rep, cm = state.clientMode;
     if (cm) R.publico = 'cliente';
-    qsa('#rep-tipo button').forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-v') === R.tipo); });
+    qsa('#rep-tipo button').forEach(function (b) { var on = b.getAttribute('data-v') === R.tipo; b.classList.toggle('on', on); b.setAttribute('aria-pressed', on ? 'true' : 'false'); });
     qsa('#rep-publico button').forEach(function (b) {
       var v = b.getAttribute('data-v');
       b.classList.toggle('on', v === R.publico);
+      b.setAttribute('aria-pressed', v === R.publico ? 'true' : 'false');
       b.disabled = cm && v === 'interno';
       b.title = cm && v === 'interno' ? 'Desligue o modo cliente para gerar a versão interna' : '';
     });
@@ -1869,19 +2133,39 @@
       : 'Versão interna: inclui laboratório, posicionamento oficial, observações internas e links do POV Companion. Não envie ao cliente.';
     renderRepResult();
     renderRepHistory();
-    var key = JSON.stringify(repOpts()) + '|' + state.povId;
-    if (tabChanged || !R.preview || R.key !== key) loadPreview();
+    if (tabChanged || !previewIsCurrent()) loadPreview();
     else renderLeaks();
+  }
+  function repKey() { return JSON.stringify(repOpts()) + '|' + state.povId; }
+  /** A pré-visualização carregada é a das opções atuais (e, no modo cliente, a versão do cliente)? */
+  function previewIsCurrent() {
+    var P = state.rep.preview;
+    return !!P && P.key === repKey() && P.publico === repOpts().publico && (!state.clientMode || P.publico === 'cliente');
+  }
+  /** Tira da tela o documento anterior: nunca fica à mostra um documento de outra audiência/PoV enquanto o novo carrega. */
+  function clearPreview(msg) {
+    state.rep.preview = null;
+    $('preview').srcdoc = msg ? '<!DOCTYPE html><html><body style="font-family:Arial,sans-serif;color:#6b7280;padding:24px;font-size:13px">' + esc(msg) + '</body></html>' : '';
+    $('rep-leaks').innerHTML = '';
+  }
+  /** O documento abre links numa nova aba (o relatório já traz <base target="_blank">; garante para versões antigas). */
+  function withBaseTarget(html) {
+    return /<base\s/i.test(html) ? html : String(html).replace(/<head([^>]*)>/i, '<head$1><base target="_blank">');
   }
   function loadPreview() {
     var R = state.rep, seq = ++R.seq, opts = repOpts(), key = JSON.stringify(opts) + '|' + state.povId;
-    R.key = key;
+    clearPreview('Gerando a pré-visualização…');
     return api('apiPreviewReport', state.povId, opts).then(function (r) {
       if (seq !== R.seq) return;
+      if (state.clientMode && r.publico !== 'cliente') { clearPreview(); return; }
+      r.key = key;
       R.preview = r;
-      $('preview').srcdoc = r.html;
+      $('preview').srcdoc = withBaseTarget(r.html);
       renderLeaks();
-    }).catch(fail);
+    }).catch(function (e) {
+      if (seq === R.seq) clearPreview('Não foi possível gerar a pré-visualização. Tente "Atualizar pré-visualização".');
+      fail(e);
+    });
   }
   function renderLeaks() {
     var R = state.rep, el = $('rep-leaks');
@@ -1899,13 +2183,18 @@
       return '<tr><td>' + esc(x.onde) + '</td><td>' + esc(LEAK_TIPO[x.tipo] || x.tipo) + '</td><td class="mono">' + esc(x.trecho) + '</td></tr>';
     }).join('') + '</tbody></table>';
   }
-  function renderRepResult() {
+  /** Último documento salvo nesta PoV, se pode aparecer (no modo cliente, só a versão do cliente). */
+  function visibleLastSave() {
     var s = state.rep.lastSave;
-    var ok = s && s.pov === state.povId;
-    $('btn-rep-pdf').disabled = !(ok && s.pdf_id);
-    if (!ok) { $('rep-result').innerHTML = ''; return; }
+    return s && s.pov === state.povId && (!state.clientMode || s.publico === 'cliente') ? s : null;
+  }
+  function renderRepResult() {
+    var s = visibleLastSave();
+    $('btn-rep-pdf').disabled = !(s && s.pdf_id);
+    if (!s) { $('rep-result').innerHTML = ''; return; }
+    // a pasta da PoV guarda também interno/: não aparece no modo cliente
     $('rep-result').innerHTML = '<span class="muted small">Salvo: ' + esc(s.name) + '</span> ' +
-      (s.pdf_url ? link(s.pdf_url, 'PDF ↗') : '') + link(s.html_url, 'HTML ↗') + (s.folder_url ? link(s.folder_url, 'pasta ↗') : '') +
+      (s.pdf_url ? link(s.pdf_url, 'PDF ↗') : '') + link(s.html_url, 'HTML ↗') + (s.folder_url && !state.clientMode ? link(s.folder_url, 'pasta ↗') : '') +
       (s.pdf_error ? '<div class="small warn-text">' + esc(s.pdf_error) + '</div>' : '');
   }
   function renderRepHistory() {
@@ -1946,11 +2235,12 @@
   $('btn-rep-preview').addEventListener('click', function () { loadPreview(); });
   $('btn-rep-open').addEventListener('click', function () {
     var R = state.rep;
-    if (!R.preview) { toast('Aguarde a pré-visualização.', true); return; }
+    if (!previewIsCurrent()) { toast('Aguarde a pré-visualização desta versão do documento.', true); return; }
     var w = window.open('', '_blank');
     if (!w) { toast('O navegador bloqueou a nova aba. Permita pop-ups para este site.', true); return; }
+    try { w.opener = null; } catch (e) { /* janela de outra origem */ }
     w.document.open();
-    w.document.write(R.preview.html);
+    w.document.write(withBaseTarget(R.preview.html));
     w.document.close();
   });
   $('btn-rep-save').addEventListener('click', function () { saveReport(false); });
@@ -1967,7 +2257,7 @@
           { ok: 'Salvar mesmo assim', cancel: 'Cancelar', id: 'leak-confirm', cls: 'medium' })
           .then(function (ok) { btn.disabled = false; if (ok) return saveReport(true); });
       }
-      state.rep.lastSave = Object.assign({ pov: state.povId }, r);
+      state.rep.lastSave = Object.assign({ pov: state.povId, publico: opts.publico }, r);
       renderRepResult();
       toast(r.pdf_error ? r.pdf_error : 'Documento salvo no Drive.', !!r.pdf_error);
       return api('apiGetPov', state.povId).then(setView);
@@ -1984,7 +2274,7 @@
     setTimeout(function () { URL.revokeObjectURL(url); a.parentNode && a.parentNode.removeChild(a); }, 2000);
   }
   $('btn-rep-pdf').addEventListener('click', function () {
-    var s = state.rep.lastSave;
+    var s = visibleLastSave();
     if (!s || !s.pdf_id) return;
     downloadPdf(s.pdf_id);
   });
@@ -2042,7 +2332,11 @@
       h += '<p class="muted small mt">Somente administradores importam a biblioteca e mudam as configurações. Fale com quem publicou o app.</p>';
     }
     h += '</div></div>';
-    if (admin && info.settings) h += settingsHtml(info.settings);
+    if (admin && info.settings) {
+      h += state.clientMode
+        ? '<div class="banner mt" id="settings-hidden">Configurações ocultas no modo cliente (usuários, administradores e concorrentes). Desligue o modo cliente no topo para ver e editar.</div>'
+        : settingsHtml(info.settings);
+    }
     $('admin-body').innerHTML = h;
   }
   function adminInfoHtml(info) {
