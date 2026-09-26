@@ -315,7 +315,11 @@ async function launch() {
   await page.waitForSelector('#rep-history tr:has-text("Relatório de resultados")');
   const [pdf] = await Promise.all([page.waitForEvent('download'), page.click('#btn-rep-pdf')]);
   assert.match(pdf.suggestedFilename(), /\.pdf$/);
-  const [csvDl] = await Promise.all([page.waitForEvent('download'), page.click('#btn-rep-csv')]);
+  // o CSV do cliente passa pela mesma verificação de vazamento (o seed cita um concorrente)
+  await page.click('#btn-rep-csv');
+  await page.waitForSelector('#leak-confirm-csv');
+  assert.match(await text('#leak-confirm-csv'), /Concorrente B/);
+  const [csvDl] = await Promise.all([page.waitForEvent('download'), page.click('#leak-confirm-csv [data-act=yes]')]);
   assert.match(csvDl.suggestedFilename(), /_cliente_.*\.csv$/);
   const csv = fs.readFileSync(await csvDl.path(), 'utf8');
   assert.equal(csv.charCodeAt(0), 0xfeff, 'CSV com BOM');

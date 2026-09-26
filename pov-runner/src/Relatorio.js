@@ -89,6 +89,10 @@ function buildReportModel(pov, data, opts, refs) {
   (data.tentativas || []).forEach(function (t) { if (t.pov_id === pov.pov_id) (attemptsBy[t.exec_id] = attemptsBy[t.exec_id] || []).push(t); });
   var redactions = 0;
   function redactCount_(r) { redactions += r.count; return r.text; }
+  // links que podem ir para o cliente: evidências marcadas para o cliente (texto livre do SC também passa pela troca)
+  var clientUrls = {};
+  active.forEach(function (e) { (e.evidencias || []).forEach(function (x) { if (x.cliente === true && safeUrl(x.url)) clientUrls[safeUrl(x.url)] = true; }); });
+  function sc(text) { return interno ? (text || '') : redactCount_(redactText(text || '', clientUrls)); }
 
   var n = 0;
   var casos = [];
@@ -107,7 +111,7 @@ function buildReportModel(pov, data, opts, refs) {
       var steps = f ? (f.objectives || []).map(function (text, i) {
         if (isHeaderItem(text)) return isBlankText(text) ? null : { header: true, text: text };
         var c = byTi['step:' + i];
-        return { header: false, text: text, mark: mark(c), mark_label: markLabel('step', c), obs: comResultados && c ? c.obs : '' };
+        return { header: false, text: text, mark: mark(c), mark_label: markLabel('step', c), obs: comResultados && c ? sc(c.obs) : '' };
       }).filter(Boolean) : [];
       var outItem = byTi['out:0'];
       var attempts = (attemptsBy[it.exec_id] || []).slice().sort(function (a, b) { return a.n - b.n; });
@@ -134,22 +138,22 @@ function buildReportModel(pov, data, opts, refs) {
         summary: f && !isBlankText(f.summary) ? f.summary : '',
         description: f && !isBlankText(f.description) ? f.description : '',
         steps: steps,
-        aceite: f && !isBlankText(f.expected_outcome) ? { text: f.expected_outcome, mark: mark(outItem), mark_label: markLabel('out', outItem), obs: comResultados && outItem ? outItem.obs : '' } : null,
+        aceite: f && !isBlankText(f.expected_outcome) ? { text: f.expected_outcome, mark: mark(outItem), mark_label: markLabel('out', outItem), obs: comResultados && outItem ? sc(outItem.obs) : '' } : null,
         metricas: f ? (f.evaluation_metrics || []).map(function (text, i) {
           if (isBlankText(text)) return null;
           var c = byTi['met:' + i];
-          return { text: text, valor: comResultados && c ? c.obs : '', mark: comResultados && c && (c.ok === true || c.ok === false) ? markOf_(c.ok) : null,
+          return { text: text, valor: comResultados && c ? sc(c.obs) : '', mark: comResultados && c && (c.ok === true || c.ok === false) ? markOf_(c.ok) : null,
             mark_label: comResultados && c && (c.ok === true || c.ok === false) ? checkMarkLabel('met', c.ok) : '' };
         }).filter(Boolean) : [],
         prereqs: f ? (f.prerequisites || []).map(function (p, i) {
           var c = byTi['prereq:' + i];
-          return { text: p.name, description: p.description || '', mark: mark(c), mark_label: markLabel('prereq', c), obs: comResultados && c ? c.obs : '' };
+          return { text: p.name, description: p.description || '', mark: mark(c), mark_label: markLabel('prereq', c), obs: comResultados && c ? sc(c.obs) : '' };
         }) : [],
         removidos: interno && comResultados ? (it.checklist || []).filter(function (c) { return c.removido; }).map(function (c) { return { text: c.txt, mark: markOf_(c.ok), obs: c.obs }; }) : [],
         how_to: f && !isBlankText(f.how_to) ? f.how_to : '',
         docs: f ? f.docs.filter(function (x) { return x.url; }).map(function (x) { return { label: x.label, url: x.url }; }) : [],
-        escopo_cliente: it.escopo_cliente,
-        resultado_obtido: comResultados ? (interno ? it.resultado_obtido : redactCount_(redactText(it.resultado_obtido, evid.reduce(function (o, e) { o[e.url] = true; return o; }, {})))) : '',
+        escopo_cliente: sc(it.escopo_cliente),
+        resultado_obtido: comResultados ? sc(it.resultado_obtido) : '',
         evidencias: comResultados ? evid.map(function (e) { return { label: e.label || e.url, url: safeUrl(e.url) }; }) : [],
         evidencias_internas: comResultados && !interno ? (it.evidencias || []).length - evid.length : 0,
         testemunha: comResultados ? it.testemunha : '',
@@ -191,7 +195,10 @@ function buildReportModel(pov, data, opts, refs) {
   });
   var agenda = Object.keys(agendaMap).sort().map(function (k) { return { data: dateBr(k), itens: agendaMap[k] }; });
   var pend = pendenciasView((data.pendencias || []).filter(function (p) { return p.pov_id === pov.pov_id; }), mine, fmt(refs.nowIso, 'isodate'))
-    .filter(function (p) { return p.status === 'aberta' || (interno && tipo === 'resultados'); });
+    .filter(function (p) { return p.status === 'aberta' || (interno && tipo === 'resultados'); })
+    .map(function (p) { p.descricao = sc(p.descricao); p.resolucao = sc(p.resolucao); return p; });
+  var escopo = tipo === 'plano' ? { incluidos: [], removidos: [] } : scopeChanges(mine, pov);
+  escopo.incluidos.concat(escopo.removidos).forEach(function (x) { x.motivo = sc(x.motivo); });
 
   var progress = computeProgress(active);
   var cfg = refs.config || {};
@@ -203,21 +210,25 @@ function buildReportModel(pov, data, opts, refs) {
     marca: marca,
     pov: {
       cliente: pov.cliente, titulo: pov.titulo, oportunidade: interno ? pov.oportunidade : '', responsavel: pov.responsavel, equipe: pov.equipe,
-      contato_cliente: pov.contato_cliente, periodo: periodo, ambiente: pov.ambiente, status_label: povStatusLabel(pov.status), objetivo: pov.objetivo || '',
+      contato_cliente: pov.contato_cliente, periodo: periodo, ambiente: pov.ambiente, status_label: povStatusLabel(pov.status), objetivo: sc(pov.objetivo),
       observacoes: interno ? (pov.observacoes || '') : '',
-      plano_aceite: pov.plano_aceite_em ? { em: dateBr(pov.plano_aceite_em), por: pov.plano_aceite_por, obs: pov.plano_aceite_obs } : null,
-      resultado_aceite: pov.resultado_aceite_em ? { em: dateBr(pov.resultado_aceite_em), por: pov.resultado_aceite_por, obs: pov.resultado_aceite_obs } : null,
-      resumo_executivo: tipo === 'resultados' ? (pov.resumo_executivo || '') : '',
-      proximos_passos: tipo !== 'plano' ? (pov.proximos_passos || '') : '',
-      desfecho_label: interno && pov.desfecho ? outcomeLabel(pov.desfecho) : '',
-      competidor: interno ? (pov.competidor || '') : '',
+      // "sem aceite formal: <motivo>" é anotação interna; o cliente só vê que não houve aceite formal
+      plano_aceite: pov.plano_aceite_em ? { em: dateBr(pov.plano_aceite_em), por: pov.plano_aceite_por, sem_aceite: !pov.plano_aceite_por,
+        obs: interno || pov.plano_aceite_por ? sc(pov.plano_aceite_obs) : '' } : null,
+      // aceite do resultado só vale para a PoV encerrada (uma PoV reaberta ainda está mudando)
+      resultado_aceite: pov.status === 'done' && pov.resultado_aceite_em ? { em: dateBr(pov.resultado_aceite_em), por: pov.resultado_aceite_por, sem_aceite: !pov.resultado_aceite_por,
+        obs: interno || pov.resultado_aceite_por ? sc(pov.resultado_aceite_obs) : '' } : null,
+      resumo_executivo: tipo === 'resultados' ? sc(pov.resumo_executivo) : '',
+      proximos_passos: tipo !== 'plano' ? sc(pov.proximos_passos) : '',
+      desfecho_label: interno && pov.status === 'done' && pov.desfecho ? outcomeLabel(pov.desfecho) : '',
+      competidor: interno && pov.status === 'done' ? (pov.competidor || '') : '',
     },
     gerado: { data: fmt(refs.nowIso, 'datetime'), autor: refs.autor || '' },
     library: { export_date: dateBr(cfg.library_export_date), translation_date: dateBr(cfg.translation_date) },
     progress: progress,
     criterios: crit.list.map(function (c) {
-      return { n: c.n, texto: c.texto, peso_label: c.peso_label, obrigatorio: c.peso === 'obrigatorio', veredito: c.veredito, veredito_label: c.veredito_label,
-        manual: c.manual, justificativa: c.justificativa, casos: c.casos.map(function (x) { return x.name; }) };
+      return { n: c.n, texto: sc(c.texto), peso_label: c.peso_label, obrigatorio: c.peso === 'obrigatorio', veredito: c.veredito, veredito_label: c.veredito_label,
+        manual: c.manual, justificativa: sc(c.justificativa), casos: c.casos.map(function (x) { return x.name; }) };
     }),
     headline: { total: crit.total, atendidos: crit.atendidos, obrigatorios: crit.obrigatorios, obrigatorios_atendidos: crit.obrigatorios_atendidos,
       obrigatorios_nao_atendidos: crit.obrigatorios_nao_atendidos },
@@ -227,11 +238,12 @@ function buildReportModel(pov, data, opts, refs) {
     casos: casos,
     agenda: agenda,
     pendencias: pend,
-    escopo: tipo === 'plano' ? { incluidos: [], removidos: [] } : scopeChanges(mine, pov),
+    escopo: escopo,
     redacoes: redactions,
     execucao_ids: active.map(function (e) { return e.exec_id; }),
   };
-  model.vazamentos = interno ? [] : leakCheck(model, refs.competitorNames || []);
+  var names = (refs.competitorNames || []).concat(String(pov.competidor || '').split(/[,;\/|]+| e | and /i).map(function (s) { return s.trim(); }));
+  model.vazamentos = interno ? [] : leakCheck(model, names, clientUrls);
   return model;
 }
 
@@ -239,7 +251,7 @@ function buildReportModel(pov, data, opts, refs) {
  * Procura, na versão do cliente, o que não deveria sair: nomes de concorrentes, e-mails e links em
  * texto livre e palavras de classificação interna. Retorna [{onde, tipo, trecho}] para a tela confirmar.
  */
-function leakCheck(model, competitorNames) {
+function leakCheck(model, competitorNames, allowedUrls) {
   var hits = [];
   var names = (competitorNames || []).filter(function (x) { return String(x || '').trim().length >= 3; });
   var words = /\b(uso interno|internal only|internal|interno|confidencial interno|concorrente|competidor|competitor|battlecard|kill ?list)\b/i;
@@ -256,12 +268,24 @@ function leakCheck(model, competitorNames) {
     }
     var w = s.match(words);
     if (w) hits.push({ onde: onde, tipo: 'palavra', trecho: w[0] });
+    (s.match(/https?:\/\/[^\s<>"')\]]+/gi) || []).forEach(function (u) {
+      var clean = u.replace(/[.,;:!?]+$/, '');
+      if (!(allowedUrls && allowedUrls[clean]) && PUBLIC_URL_HOSTS.indexOf(urlHost_(clean)) < 0) hits.push({ onde: onde, tipo: 'link', trecho: clean });
+    });
   }
+  scan('Título da PoV', model.pov.titulo);
   scan('Objetivo da PoV', model.pov.objetivo);
+  scan('Ambiente e contato', [model.pov.ambiente, model.pov.contato_cliente].join(' '), { allowEmail: true });
+  if (model.pov.plano_aceite) scan('Aceite do plano', [model.pov.plano_aceite.por, model.pov.plano_aceite.obs].join(' '), { allowEmail: true });
+  if (model.pov.resultado_aceite) scan('Aceite do resultado', [model.pov.resultado_aceite.por, model.pov.resultado_aceite.obs].join(' '), { allowEmail: true });
+  model.escopo.incluidos.concat(model.escopo.removidos).forEach(function (x) { scan('Mudança de escopo', x.caso + ' ' + x.motivo); });
   scan('Resumo executivo', model.pov.resumo_executivo);
   scan('Próximos passos', model.pov.proximos_passos);
   model.criterios.forEach(function (c) { scan('Critério C' + c.n, c.texto + ' ' + (c.justificativa || '')); });
-  model.pendencias.forEach(function (p) { scan('Pendência', p.descricao + ' ' + (p.resolucao || '')); });
+  model.pendencias.forEach(function (p) {
+    scan('Pendência', p.descricao + ' ' + (p.resolucao || ''));
+    scan('Pendência (responsável)', p.responsavel_nome, { allowEmail: true });
+  });
   model.casos.forEach(function (c) {
     var onde = '#' + c.n + ' ' + c.name;
     scan(onde, c.name);
@@ -273,6 +297,7 @@ function leakCheck(model, competitorNames) {
     scan(onde + ' (resultado obtido)', c.resultado_obtido);
     c.metricas.forEach(function (m) { scan(onde + ' (métrica)', m.text + ' ' + (m.valor || '')); });
     c.evidencias.forEach(function (e) { scan(onde + ' (evidência)', e.label, { allowEmail: true }); });
+    scan(onde + ' (execução)', [c.ambiente, c.testemunha].join(' '), { allowEmail: true });
   });
   if (model.redacoes) hits.push({ onde: 'Textos da biblioteca', tipo: 'link', trecho: model.redacoes + ' link(s) interno(s) trocado(s) por "' + REDACTED + '"' });
   return hits;
@@ -382,23 +407,31 @@ function pdfBase64_(povId, pdfId, user) {
 }
 
 function exportCsv_(povId, opts, user) {
-  var model = buildReportModelFromSheets_(povId, { tipo: 'resultados', publico: (opts && opts.publico) || 'interno' }, user);
+  opts = opts || {};
+  var model = buildReportModelFromSheets_(povId, { tipo: 'resultados', publico: opts.publico || 'interno', detalhe: true }, user);
+  if (model.vazamentos.length && !opts.confirmarVazamentos) return { needs_confirmation: true, vazamentos: model.vazamentos };
   var pov = findPov_(povId);
   return { name: reportFileBaseName(pov.cliente, 'resultados', model.publico, fmt_()(nowIso_(), 'stamp')) + '.csv', csv: reportToCsv(model) };
 }
 
 // ---------------------------------------------------------------- pastas do Drive
 
+/**
+ * Pasta raiz do app. Configurada (Administração) e inacessível ou na lixeira → erro claro (nunca troca
+ * a pasta por conta própria). Sem configuração → "PoV Runner" no Meu Drive de quem publicou.
+ */
 function getRootFolder_() {
   var rootId = getConfig_('drive_folder_id');
-  var root = null;
-  if (rootId) { try { root = DriveApp.getFolderById(rootId); } catch (e) { root = null; } }
-  if (!root) {
-    var it = DriveApp.getRootFolder().getFoldersByName(APP_NAME);
-    root = it.hasNext() ? it.next() : DriveApp.getRootFolder().createFolder(APP_NAME);
-    setConfig_('drive_folder_id', root.getId());
+  if (rootId) {
+    var root = null;
+    try { root = DriveApp.getFolderById(rootId); if (root.isTrashed()) root = null; } catch (e) { root = null; }
+    if (!root) throw new Error('A pasta do Drive configurada (' + rootId + ') não está acessível para a conta que publicou o app ou está na lixeira. Ajuste em Administração › Configurações.');
+    return root;
   }
-  return root;
+  var it = DriveApp.getRootFolder().getFoldersByName(APP_NAME);
+  var created = it.hasNext() ? it.next() : DriveApp.getRootFolder().createFolder(APP_NAME);
+  setConfig_('drive_folder_id', created.getId());
+  return created;
 }
 
 function getSubfolder_(parent, name) {

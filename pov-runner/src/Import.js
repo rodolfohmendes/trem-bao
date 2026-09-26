@@ -124,6 +124,18 @@ function bundleToRows(bundle) {
         description_pt: cleanText(x.description), status: 'embedded-only', embedded: true };
     });
   });
+  // /taxonomy/nodes não traz depth: calcula pela cadeia de pais ANTES da inferência (senão um nó ativo
+  // nunca poderia ser escolhido como pai de um aposentado)
+  function fillDepths() {
+    Object.keys(nodes).forEach(function (nid) {
+      var n = nodes[nid];
+      if (typeof n.depth === 'number') return;
+      var d = 0, seen = {}, p = n.parent_id ? nodes[n.parent_id] : null;
+      while (p && !seen[p.id]) { seen[p.id] = true; d++; p = p.parent_id ? nodes[p.parent_id] : null; }
+      n.depth = d;
+    });
+  }
+  fillDepths();
   // pai dos nós embutidos: nó um nível acima que mais co-ocorre nos node_ids (marcações explícitas) dos mesmos casos;
   // empate → prefere outro nó embutido (aposentados andam juntos), depois o id (determinístico)
   var cooc = {};
@@ -147,14 +159,7 @@ function bundleToRows(bundle) {
     });
     if (cands.length) { nodes[nid].parent_id = cands[0]; nodes[nid].parent_inferido = true; }
   });
-  // /taxonomy/nodes não traz depth: calcula pela cadeia de pais
-  Object.keys(nodes).forEach(function (nid) {
-    var n = nodes[nid];
-    if (typeof n.depth === 'number') return;
-    var d = 0, seen = {}, p = n.parent_id ? nodes[n.parent_id] : null;
-    while (p && !seen[p.id]) { seen[p.id] = true; d++; p = p.parent_id ? nodes[p.parent_id] : null; }
-    n.depth = d;
-  });
+  fillDepths();
   function pathPt(nid) {
     var chain = [], seen = {}, n = nodes[nid];
     while (n && !seen[n.id]) { seen[n.id] = true; chain.unshift(n.name_pt); n = n.parent_id ? nodes[n.parent_id] : null; }
@@ -412,9 +417,16 @@ function planImport(bundle, current, opts, nowIso) {
   if (!v.ok) throw new Error('Arquivo inválido: ' + v.errors.join(' '));
   var keepMissing = v.partial && (!!opts.allowPartial || !!opts.dryRun);
   var rows = bundleToRows(bundle);
+  if (keepMissing) {
+    // export parcial autorizado: casos que só faltaram no download continuam como estavam (sem lápide)
+    var got = {};
+    rows.library.forEach(function (r) { got[r.id] = true; });
+    ((current && current.library) || []).forEach(function (r) { if (!got[r.id]) rows.library.push(JSON.parse(JSON.stringify(r))); });
+    rows.config.library_total = String(rows.library.filter(function (r) { return !r.removido_em; }).length);
+  }
   var tr = carryOverTranslations(rows, current);
   var bundleIds = {};
-  rows.library.forEach(function (r) { bundleIds[r.id] = true; });
+  rows.library.forEach(function (r) { if (!r.removido_em) bundleIds[r.id] = true; });
   var dry = dryRunImport(rows, current, v, tr, keepMissing);
   addTombstones(rows, current, nowIso);
   var execCopy = JSON.parse(JSON.stringify((current && current.execucoes) || []));
@@ -453,6 +465,9 @@ function importBundle_(bundle, opts) {
   opts = opts || {};
   return withLock_(function () {
     var current = currentImportState_();
+    if (opts.requireDemoOrEmpty && current.library.length && getConfig_('library_is_demo') !== 'true') {
+      throw new Error('A planilha já tem a biblioteca real importada; a demonstração não pode sobrescrevê-la.');
+    }
     var plan = planImport(bundle, current, opts, nowIso_());
     if (plan.dry.execucoes_orfas_em_pov_ativa > 0 && !opts.confirmOrphans) {
       throw new Error(plan.dry.execucoes_orfas_em_pov_ativa + ' execução(ões) de PoVs em execução ou concluídas ficariam órfãs. Revise o dry-run e confirme.');
@@ -493,9 +508,6 @@ function uploadBundleText_(fileName, text) {
 
 /** Importa a biblioteca sintética de demonstração (só com a Library vazia ou já em modo demo). */
 function importDemoBundle_() {
-  var hasLibrary = sheet_(SHEETS.LIBRARY).getLastRow() >= 2;
-  if (hasLibrary && getConfig_('library_is_demo') !== 'true') {
-    throw new Error('A planilha já tem a biblioteca real importada; a demonstração não pode sobrescrevê-la.');
-  }
-  return importBundle_(JSON.parse(JSON.stringify(DEMO_BUNDLE)), { confirmOrphans: true });
+  // a checagem "biblioteca vazia ou já demo" é refeita dentro do lock (importBundle_), sem janela de corrida
+  return importBundle_(JSON.parse(JSON.stringify(DEMO_BUNDLE)), { confirmOrphans: true, requireDemoOrEmpty: true });
 }

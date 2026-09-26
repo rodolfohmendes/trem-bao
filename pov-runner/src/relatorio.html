@@ -72,7 +72,7 @@
   <div class="meta"><b>PoV:</b> <?= model.pov.titulo ?><? if (model.pov.oportunidade) { ?> &nbsp;·&nbsp; <b>Oportunidade:</b> <?= model.pov.oportunidade ?><? } ?></div>
   <div class="meta"><? if (model.pov.periodo) { ?><b>Período:</b> <?= model.pov.periodo ?> &nbsp;·&nbsp; <? } ?><b>Status:</b> <?= model.pov.status_label ?><? if (model.pov.ambiente) { ?> &nbsp;·&nbsp; <b>Ambiente:</b> <?= model.pov.ambiente ?><? } ?></div>
   <div class="meta"><b>Responsável:</b> <?= model.pov.responsavel || '—' ?><? if (model.pov.equipe) { ?> &nbsp;·&nbsp; <b>Equipe:</b> <?= model.pov.equipe ?><? } ?><? if (model.pov.contato_cliente) { ?> &nbsp;·&nbsp; <b>Contato no cliente:</b> <?= model.pov.contato_cliente ?><? } ?></div>
-  <? if (model.pov.plano_aceite) { ?><div class="meta"><b>Plano aceito em</b> <?= model.pov.plano_aceite.em ?><? if (model.pov.plano_aceite.por) { ?> por <?= model.pov.plano_aceite.por ?><? } ?><? if (model.pov.plano_aceite.obs) { ?> — <?= model.pov.plano_aceite.obs ?><? } ?></div><? } ?>
+  <? if (model.pov.plano_aceite) { ?><div class="meta"><? if (model.pov.plano_aceite.sem_aceite) { ?><b>Execução iniciada em</b> <?= model.pov.plano_aceite.em ?> sem aceite formal do plano<? } else { ?><b>Plano aceito em</b> <?= model.pov.plano_aceite.em ?> por <?= model.pov.plano_aceite.por ?><? } ?><? if (model.pov.plano_aceite.obs) { ?> — <?= model.pov.plano_aceite.obs ?><? } ?></div><? } ?>
   <? if (model.pov.desfecho_label) { ?><div class="meta"><b>Desfecho (interno):</b> <?= model.pov.desfecho_label ?><? if (model.pov.competidor) { ?> · contra <?= model.pov.competidor ?><? } ?></div><? } ?>
   <div class="meta"><b>Gerado em:</b> <?= model.gerado.data ?> por <?= model.gerado.autor ?></div>
 
@@ -232,7 +232,7 @@
   <? if (model.resultados) { ?>
   <h2>Aceite do resultado</h2>
   <? if (model.pov.resultado_aceite) { ?>
-  <div class="box">Resultado aceito em <?= model.pov.resultado_aceite.em ?><? if (model.pov.resultado_aceite.por) { ?> por <?= model.pov.resultado_aceite.por ?><? } ?><? if (model.pov.resultado_aceite.obs) { ?> — <?= model.pov.resultado_aceite.obs ?><? } ?>.</div>
+  <div class="box"><? if (model.pov.resultado_aceite.sem_aceite) { ?>PoV encerrada em <?= model.pov.resultado_aceite.em ?> sem aceite formal do resultado<? } else { ?>Resultado aceito em <?= model.pov.resultado_aceite.em ?> por <?= model.pov.resultado_aceite.por ?><? } ?><? if (model.pov.resultado_aceite.obs) { ?> — <?= model.pov.resultado_aceite.obs ?><? } ?>.</div>
   <? } ?>
   <? if (!model.interno) { ?>
   <table class="sign">

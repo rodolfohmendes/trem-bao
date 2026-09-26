@@ -1988,12 +1988,22 @@
     if (!s || !s.pdf_id) return;
     downloadPdf(s.pdf_id);
   });
-  $('btn-rep-csv').addEventListener('click', function () {
-    api('apiExportCsv', state.povId, { publico: state.clientMode ? 'cliente' : state.rep.publico }).then(function (r) {
+  $('btn-rep-csv').addEventListener('click', function () { exportCsv(false); });
+  function exportCsv(confirmed) {
+    var publico = state.clientMode ? 'cliente' : state.rep.publico;
+    var opts = { publico: publico };
+    if (confirmed) opts.confirmarVazamentos = true;
+    return api('apiExportCsv', state.povId, opts).then(function (r) {
+      if (r.needs_confirmation) {
+        return askConfirm('Baixar o CSV do cliente mesmo assim?',
+          '<p>A verificação encontrou ' + plural(r.vazamentos.length, 'ponto', 'pontos') + ' que talvez não devam ir para o cliente:</p>' + leakTable(r.vazamentos),
+          { ok: 'Baixar mesmo assim', cancel: 'Cancelar', id: 'leak-confirm-csv', cls: 'medium' })
+          .then(function (ok) { if (ok) return exportCsv(true); });
+      }
       downloadBlob(r.name, new Blob([r.csv], { type: 'text/csv;charset=utf-8' }));
-      toast('CSV (' + (PUBLICO[state.clientMode ? 'cliente' : state.rep.publico]) + ') baixado.');
+      toast('CSV (' + PUBLICO[publico] + ') baixado.');
     }).catch(fail);
-  });
+  }
 
   // ============================================================ aba Histórico
   function renderHist() {

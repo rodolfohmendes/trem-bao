@@ -59,3 +59,30 @@ test('detalhamento mostra títulos de passos, aceite com observado e métricas m
   assert.match(html, /tradução pendente/, 'caso sem tradução marcado na versão interna');
   assert.match(html, /Parcial/);
 });
+
+test('plano do cliente COM detalhamento: textos da biblioteca aparecem e nada interno aparece (asserções não vazias)', () => {
+  const w = world();
+  const execs = S.addCasesToPlan([], w.pov, [ID.ZTNA, ID.APPID_BLOCK], w.idx, w.tax, w.refs).created;
+  const data = { execucoes: execs, caseIdx: w.idx, taxonomia: w.tax };
+  const refs = { autor: 'sc@example.com', nowIso: LATER, competitorNames: ['Concorrente A'] };
+  const interno = render(S.buildReportModel(w.pov, data, { tipo: 'plano', publico: 'interno' }, refs));
+  const cliente = render(S.buildReportModel(w.pov, data, { tipo: 'plano', publico: 'cliente', detalhe: true }, refs));
+  for (const s of ['intranet.example.com', 'pov-companion.example.com', 'Concorrente A']) {
+    assert.ok(interno.includes(s), 'a versão interna tem "' + s + '" (a checagem do cliente não é vazia)');
+    assert.ok(!cliente.includes(s), 'a versão do cliente não tem "' + s + '"');
+  }
+  assert.match(cliente, /Como testar/);
+  assert.match(cliente, /\[link interno omitido\]/);
+});
+
+test('sem aceite formal: o cliente vê só que não houve aceite; o motivo fica na versão interna', () => {
+  const w = world();
+  const pov = S.transitionPov(w.pov, 'aceitar_plano', { sem_aceite: true, motivo: 'Cliente aprovou por e-mail informal' }, w.refs).row;
+  const data = { execucoes: [], caseIdx: w.idx, taxonomia: w.tax };
+  const refs = { autor: 'sc@example.com', nowIso: LATER };
+  const c = render(S.buildReportModel(pov, data, { tipo: 'status', publico: 'cliente' }, refs));
+  const i = render(S.buildReportModel(pov, data, { tipo: 'status', publico: 'interno' }, refs));
+  assert.match(c, /sem aceite formal do plano/);
+  assert.ok(!/aprovou por e-mail informal/.test(c));
+  assert.match(i, /aprovou por e-mail informal/);
+});

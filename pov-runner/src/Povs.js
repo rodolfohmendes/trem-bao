@@ -100,7 +100,7 @@ function transitionPov(current, action, input, refs) {
   var events = [];
   var motivo = String(input.motivo || '').trim();
   function need(cond, msg) { if (!cond) throw new Error(msg); }
-  function dateOr(d) { return d && isIsoDate(d) ? d : refs.nowIso.slice(0, 10); }
+  function dateOr(d) { return d && isIsoDate(d) ? d : (refs.hoje || refs.nowIso.slice(0, 10)); }
   if (action === 'aceitar_plano') {
     need(current.status === 'planning', 'O aceite do plano é registrado com a PoV em planejamento.');
     if (input.sem_aceite) {
@@ -141,7 +141,11 @@ function transitionPov(current, action, input, refs) {
     need(LOCKED_POV_STATUSES.indexOf(current.status) >= 0, 'Só uma PoV concluída ou cancelada pode ser reaberta.');
     need(motivo.length >= 5, 'Explique por que a PoV está sendo reaberta.');
     r.status = current.plano_aceite_em ? 'running' : 'planning';
-    events.push(povEvent_(r, current.status, r.status, motivo, refs));
+    var antes = current.resultado_aceite_em ? ' (encerramento anterior: aceite em ' + current.resultado_aceite_em +
+      (current.resultado_aceite_por ? ' por ' + current.resultado_aceite_por : '') + (current.desfecho ? ', ' + outcomeLabel(current.desfecho) : '') + ')' : '';
+    // o aceite e o desfecho anteriores ficam no histórico; na PoV reaberta eles não valem mais
+    r.resultado_aceite_em = ''; r.resultado_aceite_por = ''; r.resultado_aceite_obs = ''; r.desfecho = ''; r.competidor = '';
+    events.push(povEvent_(r, current.status, r.status, motivo + antes, refs));
   } else if (action === 'cancelar') {
     need(current.status === 'planning' || current.status === 'running', 'Esta PoV já está encerrada.');
     need(motivo.length >= 5, 'Explique por que a PoV está sendo cancelada.');
@@ -171,9 +175,11 @@ function parseEmails(text) {
 function isAuthorizedUser(email, usuariosCfg) {
   email = String(email || '').toLowerCase();
   if (!email || email.indexOf('@') < 0) return false;
-  var entries = String(usuariosCfg || '').toLowerCase().split(/[\s,;]+/).filter(Boolean);
-  if (!entries.length) return true;
-  return entries.some(function (e) { return e.charAt(0) === '@' ? email.slice(-e.length) === e : e === email; });
+  var text = String(usuariosCfg || '').toLowerCase();
+  var emails = parseEmails(text);
+  var domains = (text.match(/(^|[\s,;<])(@[a-z0-9.-]+\.[a-z]{2,})/g) || []).map(function (d) { return d.replace(/^[\s,;<]+/, ''); });
+  if (!emails.length && !domains.length) return true;
+  return emails.indexOf(email) >= 0 || domains.some(function (d) { return email.slice(-d.length) === d; });
 }
 
 /** Administrador: quem publicou o app (dono dos dados) ou quem está em Config.admins. */
@@ -225,7 +231,7 @@ function listPovSummaries(povs, execucoes, criterios, filter, access) {
     return {
       pov_id: p.pov_id, cliente: p.cliente, titulo: p.titulo, oportunidade: p.oportunidade, responsavel: p.responsavel,
       inicio: p.inicio, fim_previsto: p.fim_previsto, status: p.status, status_label: povStatusLabel(p.status),
-      desfecho: p.desfecho, desfecho_label: p.desfecho ? outcomeLabel(p.desfecho) : '', plano_aceito: !!p.plano_aceite_em,
+      desfecho: p.status === 'done' ? p.desfecho : '', desfecho_label: p.status === 'done' && p.desfecho ? outcomeLabel(p.desfecho) : '', plano_aceito: !!p.plano_aceite_em,
       atualizado_em: p.atualizado_em, progress: computeProgress(ex),
       criterios: { total: cs.total, obrigatorios: cs.obrigatorios, obrigatorios_atendidos: cs.obrigatorios_atendidos },
     };
@@ -271,7 +277,8 @@ function savePov_(input, user) {
 
 function transitionPov_(povId, action, input, user) {
   return withLock_(function () {
-    var res = transitionPov(requirePovAccess_(povId, user), action, input || {}, { autor: user.email, nowIso: nowIso_() });
+    var now = nowIso_();
+    var res = transitionPov(requirePovAccess_(povId, user), action, input || {}, { autor: user.email, nowIso: now, hoje: fmt_()(now, 'isodate') });
     updateRowsByKey_(SHEETS.POVS, [res.row]);
     appendEvents_(res.events);
     return res.row;

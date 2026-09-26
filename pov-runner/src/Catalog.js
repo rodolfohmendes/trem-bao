@@ -74,14 +74,23 @@ function clientSharedCode() {
 
 var CATALOG_CACHE_KEY = 'catalog-v2';
 
+/**
+ * Catálogo em cache, com a chave amarrada à importação (Config.last_import_at): quem leu a biblioteca
+ * antiga grava sob a chave antiga, que ninguém mais consulta depois de uma importação nova.
+ */
 function getCatalog_() {
-  var cached = cacheGetBig_(CATALOG_CACHE_KEY);
-  if (cached) return JSON.parse(cached);
-  var catalog = buildCatalog(readTable_(SHEETS.LIBRARY), readTable_(SHEETS.TAXONOMIA), readTable_(SHEETS.AMBIENTES), getConfigAll_());
-  cachePutBig_(CATALOG_CACHE_KEY, JSON.stringify(catalog), 1800);
+  var cfg = getConfigAll_();
+  var key = CATALOG_CACHE_KEY + '-' + String(cfg.last_import_at || '0').replace(/[^0-9]/g, '');
+  var cached = cacheGetBig_(key);
+  if (cached) {
+    try { return JSON.parse(cached); } catch (e) { cacheRemoveBig_(key); }
+  }
+  var catalog = buildCatalog(readTable_(SHEETS.LIBRARY), readTable_(SHEETS.TAXONOMIA), readTable_(SHEETS.AMBIENTES), cfg);
+  cachePutBig_(key, JSON.stringify(catalog), 1800);
   return catalog;
 }
 
 function invalidateCatalogCache_() {
-  cacheRemoveBig_(CATALOG_CACHE_KEY);
+  var cfg = getConfigAll_();
+  cacheRemoveBig_(CATALOG_CACHE_KEY + '-' + String(cfg.last_import_at || '0').replace(/[^0-9]/g, ''));
 }

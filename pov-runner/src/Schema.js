@@ -87,10 +87,10 @@ var SCHEMA = {
     columns: ['exec_id', 'pov_id', 'test_case_id', 'use_case_id', 'use_case_nome', 'use_case_path', 'caso_nome', 'versao_caso', 'versao_avaliada',
       'ordem', 'prioridade', 'responsavel', 'data_prevista', 'escopo_cliente', 'criterios_ids', 'ativo', 'orfao',
       'status', 'checklist', 'resultado_obtido', 'evidencias', 'observacoes', 'causa', 'referencia', 'ambiente', 'executado_por', 'testemunha',
-      'tentativas', 'primeiro_status', 'iniciado_em', 'concluido_em', 'incluido_apos_aceite', 'removido_em', 'motivo_escopo',
+      'tentativas', 'primeiro_status', 'iniciado_em', 'concluido_em', 'incluido_apos_aceite', 'removido_em', 'removido_apos_aceite', 'motivo_escopo',
       'autor', 'criado_em', 'atualizado_em'],
     json: ['criterios_ids', 'checklist', 'evidencias'],
-    bool: ['ativo', 'orfao', 'incluido_apos_aceite'],
+    bool: ['ativo', 'orfao', 'incluido_apos_aceite', 'removido_apos_aceite'],
     num: ['versao_caso', 'versao_avaliada', 'ordem', 'tentativas'],
   },
   Tentativas: {

@@ -458,7 +458,9 @@ function devServer(TEMPLATE, GasTemplate) {
     },
     apiExportCsv: function (povId, opts) {
       var user = guard();
-      var model = reportModel(povId, { tipo: 'resultados', publico: (opts && opts.publico) || 'interno' }, user);
+      opts = opts || {};
+      var model = reportModel(povId, { tipo: 'resultados', publico: opts.publico || 'interno', detalhe: true }, user);
+      if (model.vazamentos.length && !opts.confirmarVazamentos) return { needs_confirmation: true, vazamentos: model.vazamentos };
       var pov = findPov(povId);
       return { name: reportFileBaseName(pov.cliente, 'resultados', model.publico, fmt(nowIso(), 'stamp')) + '.csv', csv: reportToCsv(model) };
     },

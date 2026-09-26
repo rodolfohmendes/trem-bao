@@ -9,6 +9,7 @@
  */
 
 function doGet() {
+  rememberOwner_();
   var t = HtmlService.createTemplateFromFile('Index');
   return t.evaluate()
     .setTitle(APP_NAME)
@@ -40,10 +41,10 @@ function guard_(role) {
   if (!email) {
     throw new Error('Não consegui identificar seu usuário Google. Abra o app com a conta corporativa; se estiver logado em várias contas, use uma janela ou perfil do navegador só com ela.');
   }
-  var cfg = {};
-  try { cfg = getConfigAll_(); } catch (e) { cfg = {}; } // planilha nova, antes de ensureSheets_: sem restrições ainda
-  if (!isAuthorizedUser(email, cfg.usuarios)) throw new Error('Seu usuário (' + email + ') não está autorizado a usar o ' + APP_NAME + '. Fale com o administrador.');
+  var cfg = getConfigAll_();
   var admin = isAdminUser(email, cfg.admins, ownerEmail_());
+  // administradores (e o dono) sempre entram: é por eles que uma lista de usuários errada é corrigida
+  if (!admin && !isAuthorizedUser(email, cfg.usuarios)) throw new Error('Seu usuário (' + email + ') não está autorizado a usar o ' + APP_NAME + '. Fale com o administrador.');
   if (role === 'admin' && !admin) throw new Error('Somente administradores do ' + APP_NAME + ' podem fazer isto.');
   return { email: email, admin: admin, visibilidade: cfg.visibilidade === 'todos' ? 'todos' : 'equipe' };
 }
@@ -62,12 +63,12 @@ function menuShowAppUrl() {
 
 function menuEnsureSheets() {
   guard_('admin');
-  ensureSheets_();
+  withLock_(ensureSheets_);
 }
 
 function menuLoadDemo() {
   guard_('admin');
-  ensureSheets_();
+  withLock_(ensureSheets_);
   var r = importDemoBundle_();
   SpreadsheetApp.getUi().alert('Biblioteca de demonstração importada: ' + r.total_novo + ' test cases sintéticos.');
 }
@@ -230,7 +231,10 @@ function apiSaveSettings(settings) {
   var user = guard_('admin');
   settings = settings || {};
   var out = {};
-  if (settings.usuarios !== undefined) out.usuarios = String(settings.usuarios).slice(0, 5000);
+  if (settings.usuarios !== undefined) {
+    out.usuarios = String(settings.usuarios).slice(0, 5000);
+    if (!isAuthorizedUser(user.email, out.usuarios)) throw new Error('Essa lista de usuários não inclui você (' + user.email + '). Inclua seu e-mail ou o domínio antes de salvar.');
+  }
   if (settings.admins !== undefined) {
     out.admins = parseEmails(settings.admins).join(', ');
     if (!isAdminUser(user.email, out.admins, ownerEmail_())) throw new Error('Você se removeria da lista de administradores. Mantenha seu e-mail ou peça para o dono do app.');

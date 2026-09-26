@@ -97,7 +97,9 @@ function checklistItems(row) {
     if (isHeaderItem(text)) return;
     out.push({ t: 'step', k: key('step', enObj[i] !== undefined ? enObj[i] : text), i: i, txt: String(text) });
   });
-  if (!isBlankText(f.expected_outcome)) out.push({ t: 'out', k: 'out', i: 0, txt: f.expected_outcome });
+  if (!isBlankText(f.expected_outcome)) {
+    out.push({ t: 'out', k: checkKey_('out', row.expected_outcome !== undefined && !isBlankText(row.expected_outcome) ? row.expected_outcome : f.expected_outcome), i: 0, txt: f.expected_outcome });
+  }
   f.evaluation_metrics.forEach(function (text, i) {
     if (isBlankText(text)) return;
     out.push({ t: 'met', k: key('met', enMet[i] !== undefined ? enMet[i] : text), i: i, txt: String(text) });
@@ -343,7 +345,7 @@ function applyExecutionUpdate(row, input, ctx) {
   if (!out.iniciado_em && touched) out.iniciado_em = ctx.nowIso;
   var attempt = null;
   if (isFinalStatus(after)) {
-    if (!isFinalStatus(before) || !out.concluido_em) out.concluido_em = ctx.nowIso;
+    if (!isFinalStatus(before) || before !== after || !out.concluido_em) out.concluido_em = ctx.nowIso;
     if (!out.executado_por) out.executado_por = ctx.autor;
     out.versao_avaliada = Number(out.versao_caso) || 0;
     if (!isFinalStatus(before) || before !== after) {
@@ -402,6 +404,7 @@ function bulkUpdateExecutions(execucoes, pov, execIds, changes, expected, ctx) {
   if (changes.responsavel !== undefined && String(changes.responsavel).length > LIMITS.short) throw new Error('Responsável passou de ' + LIMITS.short + ' caracteres.');
   var na = changes.nao_aplicavel;
   if (na && String(na.motivo || '').trim().length < 3) throw new Error('Informe o motivo para marcar como Não aplicável.');
+  if (na && String(na.motivo).length > LIMITS.medium) throw new Error('O motivo passou de ' + LIMITS.medium + ' caracteres.');
   var critIds = ctx.critIds || {};
   if (changes.criterio_add && !critIds[changes.criterio_add]) throw new Error('Critério de sucesso não encontrado.');
   var want = {};
@@ -425,7 +428,12 @@ function bulkUpdateExecutions(execucoes, pov, execIds, changes, expected, ctx) {
       r.status = 'not_applicable';
       var motivo = 'Não aplicável: ' + String(na.motivo).trim();
       r.resultado_obtido = r.resultado_obtido ? r.resultado_obtido + '\n' + motivo : motivo;
+      if (r.resultado_obtido.length > LIMITS.result) {
+        out.conflicts.push({ exec_id: e.exec_id, caso: e.caso_nome, autor: e.autor, atualizado_em: e.atualizado_em, motivo: 'resultado obtido longo demais para acrescentar o motivo' });
+        return;
+      }
       r.concluido_em = ctx.nowIso;
+      r.versao_avaliada = Number(r.versao_caso) || 0;
       if (!r.iniciado_em) r.iniciado_em = ctx.nowIso;
       r.tentativas = (Number(r.tentativas) || 0) + 1;
       if (!r.primeiro_status) r.primeiro_status = 'not_applicable';

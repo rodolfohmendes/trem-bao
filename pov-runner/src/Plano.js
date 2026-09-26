@@ -140,6 +140,7 @@ function addCasesToPlan(execucoes, pov, caseIds, caseIdx, taxonomia, refs) {
       r.ativo = true;
       r.orfao = false;
       r.removido_em = '';
+      r.removido_apos_aceite = false;
       r.incluido_apos_aceite = baseline;
       r.motivo_escopo = baseline ? motivo : '';
       r.checklist = normalizeChecklist(r.checklist, lib).checklist;
@@ -156,9 +157,10 @@ function addCasesToPlan(execucoes, pov, caseIds, caseIdx, taxonomia, refs) {
       caso_nome: f.name, versao_caso: Number(lib.version) || 0, versao_avaliada: 0, ordem: ++ordem, prioridade: 'medium', responsavel: '', data_prevista: '',
       escopo_cliente: '', criterios_ids: [], ativo: true, orfao: false, status: 'not_started', checklist: buildChecklist(lib), resultado_obtido: '',
       evidencias: [], observacoes: '', causa: '', referencia: '', ambiente: '', executado_por: '', testemunha: '', tentativas: 0, primeiro_status: '',
-      iniciado_em: '', concluido_em: '', incluido_apos_aceite: baseline, removido_em: '', motivo_escopo: baseline ? motivo : '',
+      iniciado_em: '', concluido_em: '', incluido_apos_aceite: baseline, removido_em: '', removido_apos_aceite: false, motivo_escopo: baseline ? motivo : '',
       autor: refs.autor, criado_em: refs.nowIso, atualizado_em: refs.nowIso,
     };
+    jsonFits_(row.checklist, 'O checklist de "' + f.name + '"');
     out.created.push(row);
     out.added++;
     out.events.push(scopeEvent_(pov, row, 'incluído', baseline ? motivo : f.name, refs, baseline));
@@ -181,6 +183,7 @@ function removeFromPlan(execucoes, pov, execIds, refs) {
     var r = JSON.parse(JSON.stringify(e));
     r.ativo = false;
     r.removido_em = refs.nowIso;
+    r.removido_apos_aceite = baseline;
     r.motivo_escopo = baseline ? motivo : (motivo || '');
     r.autor = refs.autor;
     r.atualizado_em = refs.nowIso;
@@ -255,11 +258,10 @@ function groupPlan(execucoes, caseIdx, taxonomia) {
 function scopeChanges(execucoes, pov) {
   var out = { incluidos: [], removidos: [] };
   if (!pov || !pov.plano_aceite_em) return out;
-  var since = String(pov.plano_aceite_em);
   (execucoes || []).filter(function (e) { return e.pov_id === pov.pov_id; }).forEach(function (e) {
     var item = { exec_id: e.exec_id, caso: e.caso_nome, motivo: e.motivo_escopo || '', status: e.status, status_label: execStatusLabel(e.status) };
     if (e.ativo && e.incluido_apos_aceite) out.incluidos.push(item);
-    else if (!e.ativo && e.removido_em && String(e.removido_em).slice(0, 10) >= since.slice(0, 10)) out.removidos.push(item);
+    else if (!e.ativo && e.removido_apos_aceite) out.removidos.push(item);
   });
   return out;
 }
@@ -296,7 +298,7 @@ function buildPovView(pov, data) {
   return {
     pov: pov,
     pov_status_label: povStatusLabel(pov.status),
-    desfecho_label: pov.desfecho ? outcomeLabel(pov.desfecho) : '',
+    desfecho_label: pov.status === 'done' && pov.desfecho ? outcomeLabel(pov.desfecho) : '',
     locked: LOCKED_POV_STATUSES.indexOf(pov.status) >= 0,
     groups: groupPlan(active, caseIdx, data.taxonomia),
     progress: computeProgress(active),

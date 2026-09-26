@@ -178,13 +178,22 @@ function updateRowsByKey_(name, objs) {
     if (!r) throw new Error('Registro não encontrado em ' + name + ': ' + o[def.key]);
     return { row: r, values: rowToValues_(def, headers, o, name) };
   }).sort(function (a, b) { return a.row - b.row; });
+  // só as colunas do app são escritas: colunas acrescentadas à mão (ou por outra versão) ficam intactas
+  var segments = [];
+  headers.forEach(function (h, j) {
+    if (def.columns.indexOf(h) < 0) return;
+    var last = segments[segments.length - 1];
+    if (last && last.end === j) last.end = j + 1; else segments.push({ start: j, end: j + 1 });
+  });
   var start = 0;
   for (var k = 1; k <= items.length; k++) {
     if (k === items.length || items[k].row !== items[k - 1].row + 1 || items[k].row === items[k - 1].row) {
       var run = items.slice(start, k);
-      var range = sh.getRange(run[0].row, 1, run.length, headers.length);
-      range.setNumberFormat('@');
-      range.setValues(run.map(function (x) { return x.values; }));
+      segments.forEach(function (sg) {
+        var range = sh.getRange(run[0].row, sg.start + 1, run.length, sg.end - sg.start);
+        range.setNumberFormat('@');
+        range.setValues(run.map(function (x) { return x.values.slice(sg.start, sg.end); }));
+      });
       start = k;
     }
   }
@@ -194,6 +203,7 @@ function updateRowsByKey_(name, objs) {
 
 function getConfigAll_() {
   var out = {};
+  if (!ss_().getSheetByName(SHEETS.CONFIG)) return out; // planilha nova: ainda sem abas (só este caso; outros erros sobem)
   readTable_(SHEETS.CONFIG).forEach(function (r) { out[r.chave] = r.valor; });
   return out;
 }
@@ -288,11 +298,29 @@ function currentUserEmail_() {
   return String(email || '').toLowerCase();
 }
 
-/** E-mail da conta que publicou o web app (dona dos dados). */
+/**
+ * E-mail da conta que publicou o web app (dona dos dados). No web app ("executar como eu") o usuário
+ * efetivo É o dono, e doGet grava isso nas propriedades do script; em menus e no editor o usuário
+ * efetivo é quem clicou, então vale o que foi gravado (ou, antes do primeiro acesso ao web app, o
+ * dono da planilha).
+ */
 function ownerEmail_() {
-  var email = '';
-  try { email = Session.getEffectiveUser().getEmail(); } catch (e) { email = ''; }
-  return String(email || '').toLowerCase();
+  var stored = '';
+  try { stored = PropertiesService.getScriptProperties().getProperty('owner_email') || ''; } catch (e) { stored = ''; }
+  if (stored) return stored;
+  try { var o = ss_().getOwner(); if (o && o.getEmail()) return String(o.getEmail()).toLowerCase(); } catch (e2) { /* Drive compartilhado: sem dono */ }
+  var eff = '';
+  try { eff = Session.getEffectiveUser().getEmail(); } catch (e3) { eff = ''; }
+  return String(eff || '').toLowerCase();
+}
+
+/** Chamado no contexto do web app (doGet), onde o usuário efetivo é quem publicou. */
+function rememberOwner_() {
+  try {
+    var eff = String(Session.getEffectiveUser().getEmail() || '').toLowerCase();
+    var props = PropertiesService.getScriptProperties();
+    if (eff && props.getProperty('owner_email') !== eff) props.setProperty('owner_email', eff);
+  } catch (e) { /* sem acesso às propriedades: ownerEmail_ usa o dono da planilha */ }
 }
 
 function nowIso_() {

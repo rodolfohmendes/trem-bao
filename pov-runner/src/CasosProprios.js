@@ -35,6 +35,11 @@ function validateCustomCase(input) {
   var mets = cleanList_(input.metricas, 1000, 100000);
   if (mets.length > 10) errors.push('No máximo 10 métricas.');
   if (mets.some(function (o) { return o.length > LIMITS.short; })) errors.push('Cada métrica pode ter até ' + LIMITS.short + ' caracteres.');
+  if (!errors.length) {
+    // o checklist do caso (passos + aceite + métricas) precisa caber numa célula da planilha
+    var probe = customToLibraryRow(Object.assign({ caso_id: 'custom:probe', versao: 1, ativo: true }, customFields_(input)), {});
+    if (JSON.stringify(buildChecklist(probe)).length > LIMITS.jsonCell) errors.push('O caso ficou grande demais para uma célula da planilha: encurte os passos ou o resultado esperado.');
+  }
   return { ok: errors.length === 0, errors: errors };
 }
 

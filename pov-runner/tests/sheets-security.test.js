@@ -33,7 +33,7 @@ function topLevelFunctions() {
 const FUNCS = topLevelFunctions();
 const ALL_SRC = Object.values(SOURCES).join('\n');
 const DEFINED = new Set([...ALL_SRC.matchAll(/function\s+([A-Za-z_$][\w$]*)\s*\(/g)].map((m) => m[1]));
-const GAS = /\b(SpreadsheetApp|DriveApp|Session|Utilities|HtmlService|CacheService|LockService|ScriptApp|MimeType|Logger)\./;
+const GAS = /\b(SpreadsheetApp|DriveApp|Session|Utilities|HtmlService|CacheService|LockService|PropertiesService|ScriptApp|MimeType|Logger)\./;
 const PUBLIC_OK = /^(api[A-Z]\w*|doGet|include|onOpen|menu[A-Z]\w*|runAllTests|spikeReportPdf)$/;
 
 test('Sheets: serialização anti-fórmula reversível, JSON, booleanos, números e limite por célula', () => {

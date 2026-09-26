@@ -47,7 +47,9 @@ idioma.
    POV Companion, oportunidade, observações internas, causa/referência, tentativas, desfecho; links
    internos citados no texto literal viram "[link interno omitido]" (docs públicas ficam). Antes de
    salvar um documento do cliente, a **verificação de vazamento** lista concorrentes, e-mails e
-   palavras internas encontrados e pede confirmação.
+   palavras internas encontrados (e links que escaparam) e pede confirmação — no PDF e no CSV. Textos
+   livres do SC na versão do cliente também passam pela troca de links (só evidências marcadas para o
+   cliente e docs públicas ficam); o motivo de "sem aceite formal" fica só na versão interna.
 6. **Relatório claro** (tema de impressão, CSS simples) — pode ir ao cliente e o conversor HTML→PDF do
    Apps Script respeita.
 7. **Sem dados reais no repositório** (público): testes e a "biblioteca de demonstração" usam
@@ -108,7 +110,8 @@ cabeçalho real da aba, então colunas novas de versões futuras não desalinham
   execução (`status`, `checklist`, `resultado_obtido`, `evidencias [{label,url,cliente}]`,
   `observacoes`, `causa`, `referencia`, `ambiente`, `executado_por`, `testemunha`), ciclo
   (`tentativas`, `primeiro_status`, `versao_avaliada`, `iniciado_em`, `concluido_em`), escopo
-  (`ativo`, `orfao`, `incluido_apos_aceite`, `removido_em`, `motivo_escopo`), auditoria.
+  (`ativo`, `orfao`, `incluido_apos_aceite`, `removido_em`, `removido_apos_aceite`, `motivo_escopo`), auditoria.
+  A mudança de escopo é um fato gravado na hora (não uma comparação de datas).
 - **Tentativas**: foto de cada vez que um caso chega a um status final (re-teste).
 - **Pendencias**: `descricao`, `responsavel_tipo` (cliente | panw | parceiro), `responsavel_nome`,
   `prazo`, `status` (aberta | resolvida), `exec_ids`, `resolucao`.
@@ -123,7 +126,8 @@ Entrada: id/URL de arquivo no Drive ou arquivo do computador (gravado em `PoV Ru
 Validação: `meta.source`, ids únicos, listas de referência não vazias (`taxonomy_nodes`, `node_types`,
 `environments`), todo `meta.counts.*` igual ao tamanho da lista, e **export parcial** (`meta.partial`
 ou total reportado maior que a lista) recusado sem autorização explícita — com autorização, casos
-ausentes não geram órfãos. Só entram casos `published` e `visibility = shared` (os demais aparecem no
+ausentes continuam na biblioteca como estavam (sem lápide, sem órfão). O dry-run nunca recusa um
+export parcial: mostra o que a importação parcial autorizada faria. Só entram casos `published` e `visibility = shared` (os demais aparecem no
 dry-run). Textos EN recebem a limpeza do `build_base` (`""` → `"`). Tradução já importada é
 preservada quando o bundle novo vem sem `pt` para a mesma versão.
 
@@ -210,13 +214,19 @@ também pode ser baixado direto pela tela. CSV (`;`, BOM, células anti-fórmula
 ## 11. Segurança, concorrência e erros
 
 - `guard_()` em toda `api*`: e-mail identificado (senão, orienta usar só a conta corporativa),
-  `Config.usuarios` (e-mails/@domínios; vazio = domínio do web app), administrador (quem publicou ou
-  `Config.admins`) para importação/demonstração/configurações; menus e testes também exigem
-  administrador. Visibilidade por PoV (`equipe`: criador, responsável e e-mails do campo equipe;
+  `Config.usuarios` (e-mails, "Nome <e-mail>" ou @domínios; vazio = domínio do web app), administrador
+  (quem publicou — gravado nas propriedades do script no primeiro acesso ao web app, porque em menus o
+  usuário efetivo é quem clicou — ou `Config.admins`) para importação/demonstração/configurações; menus
+  e testes também exigem administrador. Administradores sempre passam pela lista de usuários, e salvar
+  uma lista que exclui quem salva é recusado (ninguém fica trancado para fora). Visibilidade por PoV (`equipe`: criador, responsável e e-mails do campo equipe;
   `todos`: qualquer usuário autorizado).
 - Sem `ALLOWALL` (o app não pode ser embutido em outro site). HTML sempre escapado; links só http(s).
 - Toda gravação sob `LockService` com `SpreadsheetApp.flush()` antes de soltar o lock; concorrência
-  otimista em PoV, execução, critério, pendência e caso próprio.
+  otimista em PoV, execução, critério, pendência e caso próprio. Atualizações escrevem só as colunas do
+  app (colunas acrescentadas à mão ficam intactas). A pasta do Drive configurada nunca é trocada em
+  silêncio: inacessível ou na lixeira → erro claro. Cache do catálogo amarrado à importação.
+- Reabrir uma PoV tira o aceite e o desfecho anteriores (ficam no histórico): uma PoV em execução não
+  mostra resultado aceito.
 - Uploads: até 10 MB (conferido na tela e no servidor), gravados fora do lock.
 
 ## 12. Testes

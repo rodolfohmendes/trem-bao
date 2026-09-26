@@ -100,7 +100,7 @@ function runAllTests() {
   assert_(!!saved.html_url, 'relatório: HTML salvo');
   assert_(!!saved.pdf_url, 'relatório: PDF salvo (' + (saved.pdf_error || 'ok') + ')');
   assert_(listReportsCount_(pov.pov_id) === 1, 'Relatorios: registro gravado');
-  var csv = exportCsv_(pov.pov_id, { publico: 'cliente' }, user);
+  var csv = exportCsv_(pov.pov_id, { publico: 'cliente', confirmarVazamentos: true }, user);
   assert_(csv.csv.indexOf('Observações internas') < 0, 'CSV do cliente sem colunas internas');
 
   // 7) encerrar trava; reabrir destrava
