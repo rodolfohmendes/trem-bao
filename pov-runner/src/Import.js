@@ -348,7 +348,7 @@ function markOrphans(execucoes, bundleIds, keepMissing) {
  * Dry-run: compara as linhas novas com o estado atual. `current` = {library, execucoes, povs}.
  * Retorna contagens e listas curtas (nomes) para a tela de administração.
  */
-function dryRunImport(rows, current, validation, translationInfo) {
+function dryRunImport(rows, current, validation, translationInfo, keepMissing) {
   var curById = {};
   ((current && current.library) || []).forEach(function (r) { if (!r.removido_em) curById[r.id] = r; });
   var newById = {};
@@ -368,7 +368,7 @@ function dryRunImport(rows, current, validation, translationInfo) {
   execs.forEach(function (e) {
     var n = newById[e.test_case_id];
     if (!n) {
-      if (!e.orfao) {
+      if (!e.orfao && !keepMissing) {
         orfas.push(e.caso_nome || e.test_case_id);
         if (povStatus[e.pov_id] === 'running' || povStatus[e.pov_id] === 'done') orfasAtivas++;
       }
@@ -407,16 +407,18 @@ function dryRunImport(rows, current, validation, translationInfo) {
  */
 function planImport(bundle, current, opts, nowIso) {
   opts = opts || {};
-  var v = validateBundle(bundle, opts);
+  // o dry-run nunca recusa um export parcial: mostra o que a importação parcial (autorizada) faria
+  var v = validateBundle(bundle, opts.dryRun ? { allowPartial: true } : opts);
   if (!v.ok) throw new Error('Arquivo inválido: ' + v.errors.join(' '));
+  var keepMissing = v.partial && (!!opts.allowPartial || !!opts.dryRun);
   var rows = bundleToRows(bundle);
   var tr = carryOverTranslations(rows, current);
   var bundleIds = {};
   rows.library.forEach(function (r) { bundleIds[r.id] = true; });
-  var dry = dryRunImport(rows, current, v, tr);
+  var dry = dryRunImport(rows, current, v, tr, keepMissing);
   addTombstones(rows, current, nowIso);
   var execCopy = JSON.parse(JSON.stringify((current && current.execucoes) || []));
-  var orphanChanges = markOrphans(execCopy, bundleIds, v.partial && opts.allowPartial);
+  var orphanChanges = markOrphans(execCopy, bundleIds, keepMissing);
   return { rows: rows, dry: dry, orphanChanges: orphanChanges, validation: v };
 }
 
@@ -440,7 +442,7 @@ function currentImportState_() {
 /** Dry-run para a administração: valida e compara, sem gravar. */
 function importDryRun_(fileIdOrUrl, opts) {
   var bundle = readBundleFromDrive_(fileIdOrUrl);
-  return planImport(bundle, currentImportState_(), opts || {}, nowIso_()).dry;
+  return planImport(bundle, currentImportState_(), Object.assign({}, opts || {}, { dryRun: true }), nowIso_()).dry;
 }
 
 /**

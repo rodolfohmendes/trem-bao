@@ -256,9 +256,13 @@ function validateExecutionInput(input) {
   return { ok: errors.length === 0, errors: errors };
 }
 
-/** Mensagem padrão de conflito de concorrência otimista. */
-function conflictMessage(what, row) {
-  return what + ' foi alterado por ' + (row.autor || 'outra pessoa') + (row.atualizado_em ? ' em ' + shortDateTime(row.atualizado_em) + ' (UTC)' : '') + '.';
+/**
+ * Mensagem padrão de conflito de concorrência otimista. `what` = 'Este caso' | 'Esta PoV' | …;
+ * feminine = true para concordar o particípio. Hora no fuso do app (America/Sao_Paulo, sem horário de verão).
+ */
+function conflictMessage(what, row, feminine) {
+  return what + ' foi ' + (feminine ? 'alterada' : 'alterado') + ' por ' + (row.autor || 'outra pessoa') +
+    (row.atualizado_em ? ' em ' + fixedOffsetFormatter(-180)(row.atualizado_em, 'datetime') + ' (horário de Brasília)' : '') + '.';
 }
 
 function lockedPovMessage_(pov) {

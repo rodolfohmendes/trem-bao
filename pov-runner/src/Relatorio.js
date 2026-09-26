@@ -49,6 +49,7 @@ function caseForAudience(fields, publico) {
   ['summary', 'description', 'expected_outcome', 'how_to'].forEach(function (k) { f[k] = r(f[k]); });
   f.objectives = (f.objectives || []).map(r);
   f.evaluation_metrics = (f.evaluation_metrics || []).map(r);
+  f.prerequisites = (f.prerequisites || []).map(function (p) { return { id: p.id, name: r(p.name), description: r(p.description || '') }; });
   f.competitors = [];
   f.lab_tests = [];
   f.tested = false;
@@ -263,7 +264,10 @@ function leakCheck(model, competitorNames) {
   model.pendencias.forEach(function (p) { scan('Pendência', p.descricao + ' ' + (p.resolucao || '')); });
   model.casos.forEach(function (c) {
     var onde = '#' + c.n + ' ' + c.name;
-    scan(onde, [c.name, c.summary, c.description, c.how_to, c.escopo_cliente].join('\n'));
+    scan(onde, c.name);
+    if (!model.detalhe) return; // sem detalhamento o documento só mostra nome, use case, status e resumo do checklist
+    scan(onde, [c.summary, c.description, c.how_to, c.escopo_cliente].join('\n'));
+    c.prereqs.forEach(function (p) { scan(onde + ' (pré-requisito)', p.text + ' ' + (p.description || '') + ' ' + (p.obs || '')); });
     c.steps.forEach(function (s) { scan(onde + ' (passo)', s.text + ' ' + (s.obs || '')); });
     if (c.aceite) scan(onde + ' (resultado esperado)', c.aceite.text + ' ' + (c.aceite.obs || ''));
     scan(onde + ' (resultado obtido)', c.resultado_obtido);
@@ -358,7 +362,7 @@ function saveReport_(povId, opts, user) {
   shareWithTeam_(htmlFile, pov, user);
   var row = {
     relatorio_id: Utilities.getUuid(), pov_id: pov.pov_id, tipo: model.tipo, publico: model.publico, casos: model.casos.length,
-    aprovados: model.progress.aprovados, autor: user.email, criado_em: nowIso_(), html_url: htmlFile.getUrl(), pdf_url: pdfUrl,
+    aprovados: model.progress.aprovados, autor: user.email, criado_em: nowIso_(), html_url: htmlFile.getUrl(), pdf_url: pdfUrl, pdf_id: pdfId,
     library_export_date: getConfig_('library_export_date'),
   };
   withLock_(function () {
@@ -371,7 +375,7 @@ function saveReport_(povId, opts, user) {
 /** PDF salvo, em base64, para a tela baixar direto (útil quando o compartilhamento do domínio é bloqueado). */
 function pdfBase64_(povId, pdfId, user) {
   requirePovAccess_(povId, user);
-  var rel = readTable_(SHEETS.RELATORIOS).filter(function (r) { return r.pov_id === povId && String(r.pdf_url).indexOf(pdfId) >= 0; })[0];
+  var rel = readTable_(SHEETS.RELATORIOS).filter(function (r) { return r.pov_id === povId && pdfId && (r.pdf_id === pdfId || String(r.pdf_url).indexOf(pdfId) >= 0); })[0];
   if (!rel) throw new Error('Relatório não encontrado para esta PoV.');
   var file = DriveApp.getFileById(pdfId);
   return { name: file.getName(), base64: Utilities.base64Encode(file.getBlob().getBytes()) };

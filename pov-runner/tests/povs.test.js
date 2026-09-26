@@ -29,7 +29,7 @@ test('createPovRow e updatePovRow (campos, concorrência, travada)', () => {
   const u = S.updatePovRow(p, { titulo: 'PoV SASE v2', status: 'done', expected_atualizado_em: NOW }, Object.assign(refs(), { nowIso: LATER }));
   assert.equal(u.row.titulo, 'PoV SASE v2');
   assert.equal(u.row.status, 'planning', 'status só muda por transição');
-  assert.throws(() => S.updatePovRow(u.row, { titulo: 'x y', expected_atualizado_em: NOW }, refs()), (e) => e.conflict === true && /alterado por/.test(e.message));
+  assert.throws(() => S.updatePovRow(u.row, { titulo: 'x y', expected_atualizado_em: NOW }, refs()), (e) => e.conflict === true && /Esta PoV foi alterada por/.test(e.message));
   assert.throws(() => S.updatePovRow(Object.assign({}, p, { status: 'done' }), { titulo: 'x y' }, refs()), /Reabra/);
 });
 

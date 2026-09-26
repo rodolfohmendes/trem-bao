@@ -308,7 +308,7 @@ function buildPovView(pov, data) {
     casos_proprios: Object.keys(custom).map(function (id) {
       var c = custom[id];
       return { caso_id: id, nome: c.name, resumo: c.summary, objetivos: c.objectives, resultado_esperado: c.expected_outcome, metricas: c.evaluation_metrics,
-        como_testar: c.how_to, use_case_id: (c.node_ids || [])[0] || '', versao: c.version };
+        como_testar: c.how_to, use_case_id: (c.node_ids || [])[0] || '', versao: c.version, atualizado_em: c.updated_at || '' };
     }),
     in_plan: active.map(function (e) { return e.test_case_id; }),
     relatorios: (data.relatorios || []).filter(function (r) { return r.pov_id === pov.pov_id; })

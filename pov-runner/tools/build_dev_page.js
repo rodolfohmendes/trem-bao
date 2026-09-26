@@ -391,13 +391,13 @@ function devServer(TEMPLATE, GasTemplate) {
       var user = guard();
       var pov = requirePovAccess(povId, user);
       var refs = { autor: user.email, nowIso: nowIso(), newId: uuid };
+      if (LOCKED_POV_STATUSES.indexOf(pov.status) >= 0) throw new Error('A PoV está "' + povStatusLabel(pov.status) + '". Reabra a PoV para mudar pendências.');
       if (input && input.pend_id) {
         var cur = readTable(SHEETS.PENDENCIAS).filter(function (p) { return p.pend_id === input.pend_id && p.pov_id === povId; })[0];
         var res = updatePendenciaRow(cur, input, refs);
         updateRowsByKey(SHEETS.PENDENCIAS, [res.row]);
         appendEvents(res.events);
       } else {
-        if (LOCKED_POV_STATUSES.indexOf(pov.status) >= 0) throw new Error('A PoV está "' + povStatusLabel(pov.status) + '". Reabra a PoV para registrar pendências.');
         var created = createPendenciaRow(pov, input || {}, (input && input.exec_ids) || [], refs).row;
         appendRows(SHEETS.PENDENCIAS, [created]);
         appendEvents([{ pov_id: povId, exec_id: '', test_case_id: '', tipo: 'pendencia', de: '', para: 'aberta', nota: created.descricao, autor: user.email, em: refs.nowIso }]);
@@ -496,7 +496,7 @@ function devServer(TEMPLATE, GasTemplate) {
     },
     apiImportDryRun: function (fileIdOrUrl, opts) {
       guard('admin');
-      return planImport(readBundle(fileIdOrUrl), currentImportState(), opts || {}, nowIso()).dry;
+      return planImport(readBundle(fileIdOrUrl), currentImportState(), Object.assign({}, opts || {}, { dryRun: true }), nowIso()).dry;
     },
     apiImportConfirm: function (fileIdOrUrl, opts) {
       guard('admin');
@@ -584,7 +584,7 @@ function devServer(TEMPLATE, GasTemplate) {
     var c1 = critId(povA, /phishing/), c2 = critId(povA, /aplicações não autorizadas/), c3 = critId(povA, /Acesso remoto/);
     as(DEV, at(15, 16), function () {
       function bulk(ids, ch) { var r = api.apiBulkUpdate(povA, ids.map(function (e) { return e.exec_id; }), ch, {}); if (r.result.conflicts.length) throw new Error('seed: bulk'); }
-      bulk([eUrl, eWf, eDns], { criterio_add: c1 });
+      bulk([eUrl, eWf], { criterio_add: c1 });
       bulk([eSsl, eApp, eApp2], { criterio_add: c2 });
       bulk([ePa, eZt], { criterio_add: c3 });
       bulk([eUrl, eWf, eSsl, eApp], { prioridade: 'high' });
@@ -710,7 +710,29 @@ function devServer(TEMPLATE, GasTemplate) {
         desfecho: 'tech_win', competidor: 'Concorrente D', aceite_por: 'Roberto Lima (CISO)', aceite_em: day(-45) });
     });
   }
-  seed();
+  // parâmetros da página de desenvolvimento: ?vazio=1 (sem biblioteca nem PoVs), ?usuario=<e-mail>,
+  // ?grande=1 (biblioteca com ~460 casos, para medir o planejador)
+  var params = {};
+  String(location.search || '').replace(/^\?/, '').split('&').filter(Boolean).forEach(function (kv) {
+    var i = kv.indexOf('=');
+    params[decodeURIComponent(i < 0 ? kv : kv.slice(0, i))] = i < 0 ? '1' : decodeURIComponent(kv.slice(i + 1));
+  });
+  if (!params.vazio) seed();
+  if (params.grande && db.library.length) {
+    var baseLib = db.library.filter(function (r) { return !r.removido_em; });
+    for (var copy = 1; db.library.length < 459; copy++) {
+      baseLib.forEach(function (r) {
+        if (db.library.length >= 459) return;
+        var c = clone(r);
+        c.id = r.id.slice(0, 24) + ('000000000000' + copy).slice(-12);
+        c.name = r.name + ' (variant ' + copy + ')';
+        if (c.name_pt) c.name_pt = r.name_pt + ' (variante ' + copy + ')';
+        db.library.push(c);
+      });
+    }
+    db.config.library_total = String(db.library.length);
+  }
+  if (params.usuario) db.session.email = params.usuario;
   clock = null;
 
   // ================================================================ google.script.run falso

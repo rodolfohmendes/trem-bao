@@ -40,7 +40,8 @@ function guard_(role) {
   if (!email) {
     throw new Error('Não consegui identificar seu usuário Google. Abra o app com a conta corporativa; se estiver logado em várias contas, use uma janela ou perfil do navegador só com ela.');
   }
-  var cfg = getConfigAll_();
+  var cfg = {};
+  try { cfg = getConfigAll_(); } catch (e) { cfg = {}; } // planilha nova, antes de ensureSheets_: sem restrições ainda
   if (!isAuthorizedUser(email, cfg.usuarios)) throw new Error('Seu usuário (' + email + ') não está autorizado a usar o ' + APP_NAME + '. Fale com o administrador.');
   var admin = isAdminUser(email, cfg.admins, ownerEmail_());
   if (role === 'admin' && !admin) throw new Error('Somente administradores do ' + APP_NAME + ' podem fazer isto.');
@@ -85,8 +86,8 @@ function ensureSheetsOnce_() {
 // ---------------------------------------------------------------- API do front: início e PoVs
 
 function apiBootstrap() {
-  ensureSheetsOnce_();
   var user = guard_();
+  ensureSheetsOnce_();
   var loaded = sheet_(SHEETS.LIBRARY).getLastRow() >= 2;
   var cfg = getConfigAll_();
   return {
@@ -236,7 +237,8 @@ function apiSaveSettings(settings) {
   }
   if (settings.visibilidade !== undefined) out.visibilidade = settings.visibilidade === 'todos' ? 'todos' : 'equipe';
   if (settings.concorrentes_extra !== undefined) out.concorrentes_extra = String(settings.concorrentes_extra).slice(0, 2000);
-  if (settings.drive_folder_id !== undefined && settings.drive_folder_id !== '') {
+  if (settings.drive_folder_id === '') out.drive_folder_id = '';
+  else if (settings.drive_folder_id !== undefined) {
     var m = String(settings.drive_folder_id).match(/[-\w]{25,}/);
     if (!m) throw new Error('Informe o id ou a URL de uma pasta do Drive.');
     try { DriveApp.getFolderById(m[0]).getName(); } catch (e) { throw new Error('Não consegui abrir a pasta ' + m[0] + ' com a conta que publicou o app.'); }

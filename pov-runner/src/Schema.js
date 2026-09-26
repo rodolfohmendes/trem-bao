@@ -118,7 +118,7 @@ var SCHEMA = {
   },
   Relatorios: {
     key: 'relatorio_id',
-    columns: ['relatorio_id', 'pov_id', 'tipo', 'publico', 'casos', 'aprovados', 'autor', 'criado_em', 'html_url', 'pdf_url', 'library_export_date'],
+    columns: ['relatorio_id', 'pov_id', 'tipo', 'publico', 'casos', 'aprovados', 'autor', 'criado_em', 'html_url', 'pdf_url', 'pdf_id', 'library_export_date'],
     json: [],
     bool: [],
     num: ['casos', 'aprovados'],

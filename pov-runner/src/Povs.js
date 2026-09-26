@@ -63,7 +63,7 @@ function createPovRow(input, refs) {
 function checkPovConflict_(current, input) {
   if (input.expected_atualizado_em !== undefined && input.expected_atualizado_em !== null &&
       String(input.expected_atualizado_em) !== String(current.atualizado_em || '')) {
-    var err = new Error(conflictMessage('Esta PoV', current));
+    var err = new Error(conflictMessage('Esta PoV', current, true));
     err.conflict = true;
     throw err;
   }

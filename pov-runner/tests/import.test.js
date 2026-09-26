@@ -196,3 +196,19 @@ test('planImport recusa bundle inválido com a mensagem do campo', () => {
   const bad = B(); bad.meta.source = 'x';
   assert.throws(() => S.planImport(bad, emptyState(), {}, NOW), /Arquivo inválido: meta\.source/);
 });
+
+test('dry-run de export parcial não recusa: mostra a importação parcial (sem órfãos novos); a confirmação exige autorização', () => {
+  const first = imported();
+  const part = B();
+  part.test_cases = part.test_cases.filter((c) => c.id !== ID.WILDFIRE);
+  part.meta.counts.test_cases = part.test_cases.length;
+  part.meta.partial = true;
+  const execs = [{ exec_id: 'e1', pov_id: 'p1', test_case_id: ID.WILDFIRE, ativo: true, orfao: false, caso_nome: 'WF', versao_caso: 2 }];
+  const current = { library: first.library, taxonomia: first.taxonomia, ambientes: first.ambientes, execucoes: execs, povs: [{ pov_id: 'p1', status: 'running' }] };
+  const dry = S.planImport(part, current, { dryRun: true }, NOW);
+  assert.equal(dry.dry.parcial, true);
+  assert.deepEqual(dry.dry.execucoes_orfas, [], 'na importação parcial autorizada, ausentes não viram órfãos');
+  assert.deepEqual(dry.orphanChanges, []);
+  assert.throws(() => S.planImport(part, current, {}, NOW), /Export parcial/);
+  assert.equal(S.planImport(part, current, { allowPartial: true }, NOW).dry.parcial, true);
+});

@@ -102,9 +102,10 @@ function criteriaSummary(criterios, execs, povId) {
   var obrig = list.filter(function (c) { return c.peso === 'obrigatorio'; });
   var activeIds = {};
   list.forEach(function (c) { activeIds[c.crit_id] = true; });
-  var semCriterio = (execs || []).filter(function (e) {
+  var semCriterioExecs = (execs || []).filter(function (e) {
     return e.ativo && !(e.criterios_ids || []).some(function (id) { return activeIds[id]; });
-  }).map(function (e) { return e.caso_nome; });
+  });
+  var semCriterio = semCriterioExecs.map(function (e) { return e.caso_nome; });
   return {
     list: list,
     total: list.length,
@@ -114,6 +115,7 @@ function criteriaSummary(criterios, execs, povId) {
     obrigatorios_nao_atendidos: obrig.filter(function (c) { return c.veredito === 'not_met'; }).length,
     sem_casos: list.filter(function (c) { return c.automatico === 'no_cases'; }).map(function (c) { return c.texto; }),
     casos_sem_criterio: list.length ? semCriterio : [],
+    casos_sem_criterio_ids: list.length ? semCriterioExecs.map(function (e) { return e.exec_id; }) : [],
   };
 }
 

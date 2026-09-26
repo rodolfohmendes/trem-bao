@@ -42,7 +42,7 @@ function createPendenciaRow(pov, input, execIds, refs) {
 function updatePendenciaRow(cur, input, refs) {
   if (!cur) throw new Error('Pendência não encontrada.');
   if (input.expected_atualizado_em !== undefined && input.expected_atualizado_em !== null && String(input.expected_atualizado_em) !== String(cur.atualizado_em || '')) {
-    var err = new Error(conflictMessage('Esta pendência', cur));
+    var err = new Error(conflictMessage('Esta pendência', cur, true));
     err.conflict = true;
     throw err;
   }
@@ -91,6 +91,7 @@ function savePendencia_(povId, input, user) {
   return withLock_(function () {
     var pov = requirePovAccess_(povId, user);
     var refs = { autor: user.email, nowIso: nowIso_(), newId: function () { return Utilities.getUuid(); } };
+    if (LOCKED_POV_STATUSES.indexOf(pov.status) >= 0) throw new Error('A PoV está "' + povStatusLabel(pov.status) + '". Reabra a PoV para mudar pendências.');
     if (input && input.pend_id) {
       var cur = readTable_(SHEETS.PENDENCIAS).filter(function (p) { return p.pend_id === input.pend_id && p.pov_id === povId; })[0];
       var res = updatePendenciaRow(cur, input, refs);
@@ -98,7 +99,6 @@ function savePendencia_(povId, input, user) {
       appendEvents_(res.events);
       return res.row;
     }
-    if (LOCKED_POV_STATUSES.indexOf(pov.status) >= 0) throw new Error('A PoV está "' + povStatusLabel(pov.status) + '". Reabra a PoV para registrar pendências.');
     var created = createPendenciaRow(pov, input || {}, (input && input.exec_ids) || [], refs).row;
     appendRows_(SHEETS.PENDENCIAS, [created]);
     appendEvents_([{ pov_id: povId, exec_id: '', test_case_id: '', tipo: 'pendencia', de: '', para: 'aberta', nota: created.descricao, autor: user.email, em: refs.nowIso }]);

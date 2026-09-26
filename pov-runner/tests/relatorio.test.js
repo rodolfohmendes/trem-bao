@@ -162,3 +162,20 @@ test('reportFileBaseName e CSV (BOM, aspas, anti-fórmula, colunas por audiênci
   const cc = S.reportToCsv(s.model('resultados', 'cliente'));
   assert.ok(!/Observações internas|Link POV Companion|Causa/.test(cc.split('\r\n')[0]));
 });
+
+test('pré-requisitos passam pelo filtro de audiência e pela verificação; sem detalhamento só o que aparece é verificado', () => {
+  const s = scenario();
+  const wfRow = s.w.idx[ID.WILDFIRE];
+  const f = S.displayFields(Object.assign(clone(wfRow), { prerequisites: [{ id: 'p', name: 'Lab em https://intranet.example.com/lab', description: 'ver https://intranet.example.com/x' }] }));
+  const c = S.caseForAudience(f, 'cliente');
+  assert.equal(c.prerequisites[0].name, 'Lab em [link interno omitido]');
+  assert.equal(c.prerequisites[0].description, 'ver [link interno omitido]');
+  assert.equal(c.redactions, 2);
+  const m = s.model('resultados', 'cliente');
+  m.casos[0].prereqs = [{ text: 'Conta de teste do Concorrente A', description: '', obs: '' }];
+  assert.ok(S.leakCheck(m, ['Concorrente A']).some((h) => /pré-requisito/.test(h.onde)));
+  const compact = s.model('plano', 'cliente');
+  assert.equal(compact.detalhe, false);
+  compact.casos[0].steps = [{ text: 'Comparar com o Concorrente A', header: false }];
+  assert.equal(S.leakCheck(compact, ['Concorrente A']).filter((h) => h.tipo === 'concorrente').length, 0, 'passo não aparece no plano compacto');
+});

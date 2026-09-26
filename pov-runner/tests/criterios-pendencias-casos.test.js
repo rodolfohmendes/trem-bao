@@ -123,3 +123,17 @@ test('casos próprios: validação, versão sobe só quando o texto muda, conver
   assert.deepEqual(S.addCasesToPlan([], other, [c.caso_id], idx, w.tax, w.refs).unknown, [c.caso_id], 'caso próprio não entra em outra PoV');
   assert.equal(S.isCustomCaseId(c.caso_id), true);
 });
+
+test('mensagem de conflito concorda em gênero e usa o horário de Brasília; visão traz atualizado_em dos casos próprios e ids sem critério', () => {
+  assert.equal(S.conflictMessage('Esta PoV', { autor: 'ana@x.com', atualizado_em: '2026-09-26T02:30:00.000Z' }, true),
+    'Esta PoV foi alterada por ana@x.com em 25/09/2026 23:30 (horário de Brasília).');
+  assert.equal(S.conflictMessage('Este caso', {}), 'Este caso foi alterado por outra pessoa.');
+  const w = world();
+  const c = S.createCustomCaseRow(w.pov, { nome: 'Caso do cliente', objetivos: ['Passo'] }, w.refs).row;
+  const idx = S.caseIndex(w.rows.library, [c], w.tax);
+  const execs = S.addCasesToPlan([], w.pov, [c.caso_id], idx, w.tax, w.refs).created;
+  const crit = S.saveCriterionRow([], w.pov, { texto: 'Algum critério' }, w.refs).row;
+  const view = S.buildPovView(w.pov, { execucoes: execs, caseIdx: idx, taxonomia: w.tax, criterios: [crit] });
+  assert.equal(view.casos_proprios[0].atualizado_em, c.atualizado_em);
+  assert.deepEqual(view.criterios.casos_sem_criterio_ids, [execs[0].exec_id]);
+});

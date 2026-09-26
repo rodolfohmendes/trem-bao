@@ -76,7 +76,7 @@ test('applyExecutionUpdate: validações, PoV travada, execução removida e con
     assert.fail('deveria dar conflito');
   } catch (err) {
     assert.equal(err.conflict, true);
-    assert.match(err.message, /alterado por ana@example.com/);
+    assert.match(err.message, /Este caso foi alterado por ana@example.com em 26\/09\/2026 10:00 \(horário de Brasília\)/);
   }
 });
 
