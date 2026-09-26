@@ -188,7 +188,11 @@ aprovados após re-teste.
   (planejador e casos próprios), **Critérios**, **Pendências**, **Relatório** (plano / resultados /
   status × interno / cliente, pré-visualização, verificação de vazamento, PDF no Drive, baixar PDF,
   CSV, documentos gerados) e **Histórico**.
-- **Modo cliente** (chave no topo): esconde o que é interno em todas as telas.
+- **Modo cliente** (chave no topo): esconde o que é interno em todas as telas, com a mesma regra dos
+  documentos (`caseForAudience`/`redactText`): histórico, tentativas (só a linha "re-executado"),
+  itens de checklist que saíram da biblioteca, observações internas, laboratório, posicionamento,
+  motivo de "sem aceite formal", configurações da Administração; a audiência dos documentos fica
+  travada em Cliente e a pré-visualização/"abrir em nova aba" nunca mostra um documento interno.
 - **Administração**: importação (Drive ou arquivo), dry-run, confirmações, demonstração, estado e,
   para administradores, configurações (usuários, administradores, visibilidade, pasta do Drive,
   concorrentes extras para a verificação de vazamento).

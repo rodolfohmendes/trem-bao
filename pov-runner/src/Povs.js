@@ -161,6 +161,11 @@ function transitionPov(current, action, input, refs) {
 
 // ---------------------------------------------------------------- acesso
 
+/** A edição tiraria o próprio usuário da PoV? (quem não é administrador precisa continuar na equipe) */
+function editRemovesOwnAccess(row, user) {
+  return !canAccessPov(row, user.email, user.admin, user.visibilidade);
+}
+
 /** E-mails de um texto livre ("Ana <ana@x.com>, bob@y.com") em minúsculas, sem repetição. */
 function parseEmails(text) {
   var out = [];
@@ -231,7 +236,8 @@ function listPovSummaries(povs, execucoes, criterios, filter, access) {
     return {
       pov_id: p.pov_id, cliente: p.cliente, titulo: p.titulo, oportunidade: p.oportunidade, responsavel: p.responsavel,
       inicio: p.inicio, fim_previsto: p.fim_previsto, status: p.status, status_label: povStatusLabel(p.status),
-      desfecho: p.status === 'done' ? p.desfecho : '', desfecho_label: p.status === 'done' && p.desfecho ? outcomeLabel(p.desfecho) : '', plano_aceito: !!p.plano_aceite_em,
+      desfecho: p.status === 'done' ? p.desfecho : '', desfecho_label: p.status === 'done' && p.desfecho ? outcomeLabel(p.desfecho) : '', plano_aceito: !!p.plano_aceite_em && !!p.plano_aceite_por,
+      plano_sem_aceite: !!p.plano_aceite_em && !p.plano_aceite_por,
       atualizado_em: p.atualizado_em, progress: computeProgress(ex),
       criterios: { total: cs.total, obrigatorios: cs.obrigatorios, obrigatorios_atendidos: cs.obrigatorios_atendidos },
     };
@@ -265,6 +271,7 @@ function savePov_(input, user) {
     var res;
     if (input && input.pov_id) {
       res = updatePovRow(requirePovAccess_(input.pov_id, user), input, refs);
+      if (editRemovesOwnAccess(res.row, user)) throw new Error('Essa alteração tiraria você da PoV: mantenha seu e-mail em Responsável ou Equipe (ou peça a um administrador).');
       updateRowsByKey_(SHEETS.POVS, [res.row]);
     } else {
       res = createPovRow(input || {}, refs);

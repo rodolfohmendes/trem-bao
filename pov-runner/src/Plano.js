@@ -230,8 +230,9 @@ function groupPlan(execucoes, caseIdx, taxonomia) {
     var lib = caseIdx[e.test_case_id];
     var item = planItemView(e, lib);
     if (item.orfao) { orphans.push(item); return; }
-    var uc = e.use_case_id ? taxById[e.use_case_id] : null;
-    var key = e.use_case_id || 'sem-use-case';
+    var ucId = lib && lib.custom ? ((lib.node_ids || [])[0] || '') : e.use_case_id;
+    var uc = ucId ? taxById[ucId] : null;
+    var key = ucId || 'sem-use-case';
     var name = uc ? (uc.name_pt || uc.name) : (e.use_case_nome || 'Sem use case');
     var path = uc ? uc.path_pt : (e.use_case_path || '');
     if (!groups[key]) groups[key] = { use_case_id: key, name: name, path: path, items: [] };
@@ -266,6 +267,26 @@ function scopeChanges(execucoes, pov) {
   return out;
 }
 
+/**
+ * Execuções com o nome atual do caso (e, para casos próprios, o use case atual): o snapshot guardado
+ * na inclusão só vale quando o caso não existe mais. Não muda as linhas recebidas.
+ */
+function withCurrentNames(execucoes, caseIdx, taxonomia) {
+  var taxById = taxIndex_(taxonomia);
+  return (execucoes || []).map(function (e) {
+    var lib = caseIdx && caseIdx[e.test_case_id];
+    if (!lib || lib.removido_em) return e;
+    var out = Object.assign({}, e, { caso_nome: displayFields(lib).name });
+    if (lib.custom) {
+      var uc = lib.node_ids && lib.node_ids[0] ? taxById[lib.node_ids[0]] : null;
+      out.use_case_id = uc ? uc.node_id : '';
+      out.use_case_nome = uc ? (uc.name_pt || uc.name) : '';
+      out.use_case_path = uc ? uc.path_pt : '';
+    }
+    return out;
+  });
+}
+
 /** Detalhe literal do caso para o painel de execução (textos + itens do checklist). */
 function caseDetail(lib) {
   var f = displayFields(lib);
@@ -278,7 +299,7 @@ function caseDetail(lib) {
  * data: {execucoes, caseIdx, taxonomia, historico, criterios, pendencias, tentativas, relatorios, hoje}.
  */
 function buildPovView(pov, data) {
-  var mine = (data.execucoes || []).filter(function (e) { return e.pov_id === pov.pov_id; });
+  var mine = withCurrentNames((data.execucoes || []).filter(function (e) { return e.pov_id === pov.pov_id; }), data.caseIdx, data.taxonomia);
   var active = mine.filter(function (e) { return e.ativo; });
   var caseIdx = data.caseIdx || {};
   var details = {};
@@ -300,6 +321,8 @@ function buildPovView(pov, data) {
     pov_status_label: povStatusLabel(pov.status),
     desfecho_label: pov.status === 'done' && pov.desfecho ? outcomeLabel(pov.desfecho) : '',
     locked: LOCKED_POV_STATUSES.indexOf(pov.status) >= 0,
+    plano_sem_aceite: !!pov.plano_aceite_em && !pov.plano_aceite_por,
+    resultado_sem_aceite: pov.status === 'done' && !!pov.resultado_aceite_em && !pov.resultado_aceite_por,
     groups: groupPlan(active, caseIdx, data.taxonomia),
     progress: computeProgress(active),
     criterios: criteriaSummary(data.criterios, active, pov.pov_id),
@@ -316,8 +339,13 @@ function buildPovView(pov, data) {
     relatorios: (data.relatorios || []).filter(function (r) { return r.pov_id === pov.pov_id; })
       .sort(function (a, b) { return String(b.criado_em) < String(a.criado_em) ? -1 : 1; }),
     historico: hist.map(function (h) {
-      var de = h.tipo === 'status' ? execStatusLabel(h.de) : h.tipo === 'pov' ? povStatusLabel(h.de) : h.de;
-      var para = h.tipo === 'status' ? execStatusLabel(h.para) : h.tipo === 'pov' ? povStatusLabel(h.para) : h.para;
+      function lbl(x) {
+        if (h.tipo === 'status') return execStatusLabel(x);
+        if (h.tipo === 'pov') return povStatusLabel(x);
+        if (h.tipo === 'criterio') return x === 'auto' ? 'Automático' : verdictLabel(x);
+        return x;
+      }
+      var de = lbl(h.de), para = lbl(h.para);
       var caso = h.exec_id ? (nameOfExec[h.exec_id] || '') : (h.test_case_id && caseIdx[h.test_case_id] ? displayFields(caseIdx[h.test_case_id]).name : '');
       return { tipo: h.tipo, de: de, para: para, nota: h.nota, autor: h.autor, em: h.em, caso: caso };
     }),

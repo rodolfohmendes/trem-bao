@@ -200,3 +200,27 @@ test('Sheets: atualização escreve só as colunas do app (colunas manuais intac
   assert.equal(calls.setValues, 2, 'um trecho de linhas contíguas × dois segmentos de colunas do app');
   delete globalThis.SpreadsheetApp;
 });
+
+test('revisão da UI (servidor): nomes/use case atuais de casos próprios, aceite sem formalidade, histórico traduzido, auto-remoção recusada', () => {
+  const w = world();
+  let c = S.createCustomCaseRow(w.pov, { nome: 'SIEM do cliente', objetivos: ['Enviar logs'], use_case_id: NODE.SIA }, w.refs).row;
+  let idx = S.caseIndex(w.rows.library, [c], w.tax);
+  const execs = S.addCasesToPlan([], w.pov, [c.caso_id], idx, w.tax, Object.assign({}, w.refs, { selectedNodeIds: [NODE.SIA] })).created;
+  const crit = S.saveCriterionRow([], w.pov, { texto: 'Logs no SIEM' }, w.refs).row;
+  execs[0].criterios_ids = [crit.crit_id];
+  c = S.updateCustomCaseRow(c, w.pov, { nome: 'SIEM corporativo', objetivos: ['Enviar logs'], use_case_id: NODE.APPCTRL }, w.refs).row;
+  idx = S.caseIndex(w.rows.library, [c], w.tax);
+  const hist = [{ pov_id: w.pov.pov_id, tipo: 'criterio', de: 'auto', para: 'not_met', em: NOW }];
+  const view = S.buildPovView(w.pov, { execucoes: execs, caseIdx: idx, taxonomia: w.tax, criterios: [crit], historico: hist });
+  assert.equal(view.groups[0].use_case_id, NODE.APPCTRL, 'grupo segue o use case atual do caso próprio');
+  assert.equal(view.criterios.list[0].casos[0].name, 'SIEM corporativo', 'nome atual nos critérios');
+  assert.deepEqual([view.historico[0].de, view.historico[0].para], ['Automático', 'Não atendido']);
+  const semAceite = S.transitionPov(w.pov, 'aceitar_plano', { sem_aceite: true, motivo: 'Cliente viajando' }, w.refs).row;
+  assert.equal(S.buildPovView(semAceite, { execucoes: [], caseIdx: idx, taxonomia: w.tax }).plano_sem_aceite, true);
+  const card = S.listPovSummaries([semAceite], [], [], {}, { isAdmin: true })[0];
+  assert.deepEqual([card.plano_aceito, card.plano_sem_aceite], [false, true]);
+  const user = { email: 'ana@example.com', admin: false, visibilidade: 'equipe' };
+  assert.equal(S.editRemovesOwnAccess(Object.assign({}, w.pov, { equipe: 'bob@example.com' }), user), true);
+  assert.equal(S.editRemovesOwnAccess(w.pov, user), false);
+  assert.equal(S.editRemovesOwnAccess(Object.assign({}, w.pov, { equipe: '' }), Object.assign({}, user, { admin: true })), false);
+});

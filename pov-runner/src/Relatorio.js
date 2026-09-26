@@ -79,7 +79,7 @@ function buildReportModel(pov, data, opts, refs) {
   var detalhe = tipo === 'status' ? false : (opts.detalhe !== undefined ? !!opts.detalhe : !(tipo === 'plano' && !interno));
   var fmt = refs.fmt || fixedOffsetFormatter(-180);
   var caseIdx = data.caseIdx || {};
-  var mine = (data.execucoes || []).filter(function (e) { return e.pov_id === pov.pov_id; });
+  var mine = withCurrentNames((data.execucoes || []).filter(function (e) { return e.pov_id === pov.pov_id; }), caseIdx, data.taxonomia);
   var active = mine.filter(function (e) { return e.ativo; });
   var groups = groupPlan(active, caseIdx, data.taxonomia);
   var crit = criteriaSummary(data.criterios, active, pov.pov_id);
