@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <title>PoV Runner</title>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <?!= include('styles.css'); ?>
+</head>
+<body>
+  <div id="loading" class="loading" aria-hidden="true"></div>
+  <header class="topbar">
+    <div class="brand">
+      <a href="#" id="brand-home" class="logo" title="Ir para a lista de PoVs">PoV<span class="accent">Runner</span></a>
+      <span class="tag">Palo Alto Networks · uso interno</span>
+    </div>
+    <nav class="crumbs" id="crumbs" aria-label="Você está em"></nav>
+    <div class="userbox">
+      <span id="user-email" class="mono"></span>
+      <button id="btn-client-mode" class="switch" role="switch" aria-checked="false" title="Esconde observações internas, posicionamento competitivo, laboratório, histórico e demais campos internos (vale só para este navegador)">
+        <span class="knob" aria-hidden="true"></span><span>Modo cliente</span>
+      </button>
+      <button id="btn-admin" class="small ghost">Administração</button>
+    </div>
+  </header>
+  <div id="client-banner" class="client-banner hidden" role="status">
+    <b>Modo cliente: campos internos ocultos.</b> Observações internas, posicionamento competitivo, laboratório, notas da biblioteca, histórico e documentos internos não aparecem. Desligue no topo para voltar à visão completa.
+  </div>
+
+  <main>
+    <section id="view-boot" class="view">
+      <div class="empty">Carregando o PoV Runner…</div>
+    </section>
+
+    <!-- Lista de PoVs -->
+    <section id="view-povs" class="view hidden">
+      <div class="head-row">
+        <div>
+          <h1>Provas de valor</h1>
+          <p class="lead">Planeje, execute e reporte PoVs com os test cases da Test Case Library do POV Companion.</p>
+        </div>
+        <button id="btn-new-pov" class="primary">+ Nova PoV</button>
+      </div>
+      <div id="povs-banners"></div>
+      <div class="counters" id="pov-counters"></div>
+      <div class="filters">
+        <input type="search" id="pov-q" placeholder="Buscar por cliente, título, oportunidade, responsável…" aria-label="Buscar PoVs">
+        <select id="pov-status" aria-label="Status da PoV"></select>
+        <label class="check"><input type="checkbox" id="pov-mine"> só as minhas</label>
+      </div>
+      <div id="pov-list"></div>
+    </section>
+
+    <!-- Biblioteca ainda não importada (usuário comum) -->
+    <section id="view-nolib" class="view hidden">
+      <div class="empty big">
+        <h2>A biblioteca de test cases ainda não foi importada</h2>
+        <p>O PoV Runner monta os planos a partir da Test Case Library do POV Companion. Um administrador precisa importar o JSON do coletor (ou a biblioteca de demonstração) em <b>Administração</b>.</p>
+        <p class="muted small">Se você acha que isso é um engano, fale com quem publicou o app.</p>
+      </div>
+    </section>
+
+    <!-- Uma PoV -->
+    <section id="view-pov" class="view hidden">
+      <div id="pov-header"></div>
+      <nav class="tabs" id="pov-tabs" role="tablist" aria-label="Seções da PoV">
+        <button data-tab="exec" role="tab">Execução</button>
+        <button data-tab="plano" role="tab">Plano</button>
+        <button data-tab="criterios" role="tab">Critérios</button>
+        <button data-tab="pendencias" role="tab">Pendências</button>
+        <button data-tab="relatorio" role="tab">Relatório</button>
+        <button data-tab="historico" role="tab">Histórico</button>
+      </nav>
+
+      <div id="tab-exec" class="tab hidden" role="tabpanel">
+        <div class="counters" id="exec-counters"></div>
+        <div class="exec-filters">
+          <div class="seg" id="exec-filter" role="group" aria-label="Filtrar por status"></div>
+          <label class="check" id="exec-mine-wrap" title="Casos cujo Responsável tem o seu e-mail ou o seu nome"><input type="checkbox" id="exec-mine"> meus</label>
+          <label class="check"><input type="checkbox" id="exec-today"> hoje</label>
+          <input type="search" id="exec-q" class="grow" placeholder="Buscar caso ou responsável…" aria-label="Buscar casos do plano">
+        </div>
+        <div id="exec-list"></div>
+        <div id="bulk-bar" class="bulk-bar hidden" aria-label="Ações em lote"></div>
+      </div>
+
+      <div id="tab-plano" class="tab hidden" role="tabpanel">
+        <div id="plan-note"></div>
+        <p class="lead">Escolha nós na taxonomia (um nó inclui os filhos) e/ou busque; marque os casos e inclua no plano. O número ao lado de cada nó respeita os filtros.</p>
+        <div class="planner">
+          <div class="card">
+            <div class="card-head">
+              <h2>Taxonomia</h2>
+              <button id="btn-tree-clear" class="small ghost">limpar seleção</button>
+            </div>
+            <div id="tree" class="tree" role="tree"></div>
+          </div>
+          <div class="card">
+            <h2>Casos da biblioteca</h2>
+            <div class="filters">
+              <input type="search" id="plan-q" placeholder="Nome ou resumo (PT ou EN)…" aria-label="Buscar casos da biblioteca">
+              <select id="plan-industry" aria-label="Indústria"></select>
+            </div>
+            <div class="filters">
+              <label class="check" id="plan-lab-wrap"><input type="checkbox" id="plan-lab"> só aprovados no laboratório</label>
+              <label class="check"><input type="checkbox" id="plan-deprecated"> mostrar descontinuados</label>
+              <label class="check"><input type="checkbox" id="plan-hide-in"> esconder os que já estão no plano</label>
+            </div>
+            <div class="toolbar tight">
+              <button id="btn-plan-all" class="small ghost">marcar todos</button>
+              <button id="btn-plan-none" class="small ghost">desmarcar</button>
+              <span id="plan-summary" class="muted small"></span>
+              <button id="btn-plan-add" class="primary push-right" disabled>Incluir no plano</button>
+            </div>
+            <div id="plan-list" class="plan-list"></div>
+          </div>
+        </div>
+        <div class="card custom-card">
+          <div class="card-head">
+            <div>
+              <h2>Casos definidos com o cliente</h2>
+              <p class="muted small nomargin">Para o que a biblioteca não tem (apps, integrações e números do cliente). Entram no plano ao serem criados e aparecem marcados como "definido com o cliente".</p>
+            </div>
+            <button id="btn-custom-new">+ Caso definido com o cliente</button>
+          </div>
+          <div id="custom-list"></div>
+        </div>
+      </div>
+
+      <div id="tab-criterios" class="tab hidden" role="tabpanel"><div id="crit-body"></div></div>
+      <div id="tab-pendencias" class="tab hidden" role="tabpanel"><div id="pend-body"></div></div>
+
+      <div id="tab-relatorio" class="tab hidden" role="tabpanel">
+        <div class="report-opts card">
+          <div>
+            <label>Documento</label>
+            <div class="seg" id="rep-tipo" role="group" aria-label="Documento">
+              <button data-v="plano">Plano de testes</button>
+              <button data-v="resultados">Relatório de resultados</button>
+              <button data-v="status">Status da PoV</button>
+            </div>
+          </div>
+          <div>
+            <label>Audiência</label>
+            <div class="seg" id="rep-publico" role="group" aria-label="Audiência">
+              <button data-v="interno">Interno</button>
+              <button data-v="cliente">Cliente</button>
+            </div>
+          </div>
+          <div class="rep-detail">
+            <label class="check"><input type="checkbox" id="rep-detalhe"> incluir detalhamento por caso</label>
+            <div class="faint small" id="rep-publico-hint"></div>
+          </div>
+          <div class="toolbar tight rep-actions">
+            <button id="btn-rep-preview" class="ghost">Atualizar pré-visualização</button>
+            <button id="btn-rep-open">Abrir em nova aba</button>
+            <button id="btn-rep-save" class="primary">Salvar PDF no Drive</button>
+            <button id="btn-rep-pdf" disabled title="Disponível depois de salvar o PDF no Drive">Baixar PDF</button>
+            <button id="btn-rep-csv" class="ghost">Baixar CSV</button>
+          </div>
+          <div id="rep-result" class="links"></div>
+        </div>
+        <div id="rep-leaks"></div>
+        <iframe id="preview" class="preview" sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" title="Pré-visualização do documento"></iframe>
+        <p class="faint small">Se o PDF gerado no servidor não sair como a pré-visualização: Abrir em nova aba → Imprimir → Salvar como PDF.</p>
+        <h2 class="sub-h">Documentos gerados</h2>
+        <div id="rep-history"></div>
+      </div>
+
+      <div id="tab-historico" class="tab hidden" role="tabpanel"><div id="hist-list"></div></div>
+    </section>
+
+    <!-- Administração -->
+    <section id="view-admin" class="view hidden">
+      <div class="head-row">
+        <div>
+          <h1>Administração</h1>
+          <p class="lead">Importe o JSON gerado pelo coletor (<span class="mono">pov-companion-collector.js</span>), de preferência o <span class="mono">.pt-BR.json</span>. A importação reescreve Library, Taxonomia e Ambientes; PoVs, execuções, critérios, pendências, histórico e documentos são preservados.</p>
+        </div>
+        <button id="btn-back-app" class="ghost">← Voltar às PoVs</button>
+      </div>
+      <div id="admin-body"></div>
+    </section>
+  </main>
+
+  <div id="modal-root"></div>
+  <datalist id="team-emails"></datalist>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script>
+<?!= clientSharedCode(); ?>
+  </script>
+  <?!= include('app.js'); ?>
+</body>
+</html>

@@ -1,0 +1,7 @@
+node_modules/
+.clasp.json
+dev/index.dev.html
+dev/shots/
+dev/*.pdf
+data/
+*.json.local

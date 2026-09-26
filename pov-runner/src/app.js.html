@@ -1,0 +1,2493 @@
+<script>
+/**
+ * app.js — front end do PoV Runner (página única, sem frameworks). Conversa com o servidor só por
+ * google.script.run (via api()). As regras compartilhadas (rótulos, filtros do planejador, checklist,
+ * sugestão de status, filtro de audiência) vêm de clientSharedCode(), injetado antes deste script.
+ */
+(function () {
+  'use strict';
+
+  // ============================================================ utilidades
+  var $ = function (id) { return document.getElementById(id); };
+  function qsa(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); }
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; });
+  }
+  function has(arr, v) { return (arr || []).indexOf(v) >= 0; }
+  function plural(n, one, many) { return n + ' ' + (n === 1 ? one : many); }
+  var fmt = fixedOffsetFormatter(-new Date().getTimezoneOffset());
+  function dt(iso) { return fmt(iso, 'datetime'); }
+  function todayIso() { return fmt(new Date().toISOString(), 'isodate'); }
+  function rel(iso) {
+    var t = new Date(iso).getTime();
+    if (!iso || isNaN(t)) return '';
+    var s = (Date.now() - t) / 1000;
+    if (s < 60) return 'agora';
+    if (s < 3600) return 'há ' + Math.floor(s / 60) + ' min';
+    if (s < 43200) return 'há ' + Math.floor(s / 3600) + ' h';
+    var full = dt(iso);
+    return full.slice(0, 5) + ' ' + full.slice(11);
+  }
+  function debounce(fn, ms) {
+    var t = null;
+    return function () { var args = arguments; clearTimeout(t); t = setTimeout(function () { fn.apply(null, args); }, ms); };
+  }
+  function lsGet(k) { try { return window.localStorage.getItem(k); } catch (e) { return null; } }
+  function lsSet(k, v) { try { window.localStorage.setItem(k, v); } catch (e) { /* armazenamento bloqueado: segue sem lembrar */ } }
+  function lines(text) { return String(text || '').split(/\r?\n/).map(function (s) { return s.trim(); }).filter(Boolean); }
+  function link(url, label, cls) {
+    var u = safeUrl(url);
+    if (!u) return esc(label || url || '');
+    return '<a href="' + esc(u) + '" target="_blank" rel="noopener noreferrer"' + (cls ? ' class="' + cls + '"' : '') + '>' + esc(label || u) + '</a>';
+  }
+  var TIPO_DOC = { plano: 'Plano de testes', resultados: 'Relatório de resultados', status: 'Status da PoV' };
+  var PUBLICO = { interno: 'Interno', cliente: 'Cliente' };
+  var HIST_TIPO = { status: 'Status', pov: 'PoV', plano: 'Plano', escopo: 'Escopo', aceite: 'Aceite', criterio: 'Critério', pendencia: 'Pendência',
+    versao: 'Versão do caso', relatorio: 'Documento' };
+  var LEAK_TIPO = { concorrente: 'Concorrente', 'e-mail': 'E-mail', palavra: 'Palavra', link: 'Link' };
+  var PROGRESS_ORDER = ['pass', 'partial', 'fail', 'blocked', 'in_progress', 'not_applicable'];
+
+  // ------------------------------------------------------------ toast e chamadas ao servidor
+  function toast(msg, isError) {
+    var t = $('toast');
+    t.textContent = msg;
+    t.className = 'show' + (isError ? ' error' : '');
+    clearTimeout(toast._t);
+    toast._t = setTimeout(function () { t.className = ''; }, isError ? 8000 : 3800);
+  }
+  function fail(e) { toast((e && e.message) || String(e), true); }
+  var inflight = 0;
+  function loading(delta) {
+    inflight = Math.max(0, inflight + delta);
+    $('loading').classList.toggle('on', inflight > 0);
+  }
+  /** google.script.run como promessa, com barra de carregamento. Erros viram Error(mensagem do servidor). */
+  function api(name) {
+    var args = Array.prototype.slice.call(arguments, 1);
+    loading(1);
+    return new Promise(function (resolve, reject) {
+      var settled = false;
+      function done() { if (!settled) { settled = true; loading(-1); } }
+      try {
+        var runner = google.script.run
+          .withSuccessHandler(function (r) { done(); resolve(r); })
+          .withFailureHandler(function (e) { done(); reject(new Error(e && e.message ? e.message : String(e || 'Falha na chamada ao servidor.'))); });
+        if (typeof runner[name] !== 'function') throw new Error('Função do servidor indisponível: ' + name + '. Recarregue a página.');
+        runner[name].apply(runner, args);
+      } catch (e) { done(); reject(e); }
+    });
+  }
+
+  // ============================================================ estado
+  var LS_CLIENT = 'povrunner.modoCliente';
+  var state = {
+    user: '', admin: false, visibilidade: 'equipe', libraryLoaded: false, importIncompleto: false, appVersion: '',
+    catalog: null, view: 'boot', allPovs: [], povs: [], povFilter: { q: '', status: '', mine: false },
+    povId: null, pov: null, d: null, tab: 'exec', tabByPov: {},
+    exec: { status: '', mine: false, today: false, q: '', selected: {} },
+    plan: { sel: {}, q: '', industry: '', lab: false, deprecated: false, hideIn: false, checked: {}, open: {} },
+    rep: { tipo: 'resultados', publico: 'interno', detalhe: null, preview: null, seq: 0, lastSave: null },
+    clientMode: lsGet(LS_CLIENT) === '1',
+    adminInfo: null, imp: { ref: '', name: '', dry: null, error: '', allowPartial: false, confirmOrphans: false },
+  };
+  var cat = { flat: [], byId: {}, anc: {}, ucNodes: [] };
+
+  function setCatalog(c) {
+    state.catalog = c;
+    cat = { flat: [], byId: {}, anc: {}, ucNodes: [] };
+    if (!c) return;
+    (function walk(nodes, parent, depth) {
+      nodes.forEach(function (n) {
+        n._depth = depth;
+        n._parent = parent ? parent.node_id : null;
+        cat.flat.push({ node_id: n.node_id, parent_id: n._parent });
+        cat.byId[n.node_id] = n;
+        walk(n.children || [], n, depth + 1);
+      });
+    })(c.tree, null, 0);
+    Object.keys(cat.byId).forEach(function (id) {
+      var chain = [], cur = id, guard = 0;
+      while (cur && guard++ < 30) { chain.push(cur); cur = cat.byId[cur] ? cat.byId[cur]._parent : null; }
+      cat.anc[id] = chain;
+    });
+    cat.ucNodes = cat.flat.map(function (f) { return cat.byId[f.node_id]; })
+      .filter(function (n) { return n.type ? n.type === 'Use Case' : n._depth === 1; })
+      .map(function (n) { return { id: n.node_id, label: nodePath(n.node_id) }; })
+      .sort(function (a, b) { return foldText(a.label) < foldText(b.label) ? -1 : 1; });
+    var small = cat.flat.length <= 80;
+    state.plan.open = {};
+    cat.flat.forEach(function (f) { var n = cat.byId[f.node_id]; if (n.children.length && (small || n._depth < 1)) state.plan.open[f.node_id] = true; });
+  }
+  function nodePath(id) { return (cat.anc[id] || []).slice().reverse().map(function (x) { return cat.byId[x] ? cat.byId[x].name : x; }).join(' › '); }
+
+  // ============================================================ modais
+  var modals = [];
+  var modalSeq = 0;
+  function focusFirst(root) {
+    var el = root.querySelector('[data-autofocus]:not([disabled])') ||
+      root.querySelector('.modal-body input:not([type=hidden]):not([type=checkbox]):not([type=file]):not([disabled]), .modal-body select:not([disabled]), .modal-body textarea:not([disabled])') ||
+      root.querySelector('.actions button:not([disabled])');
+    if (el) { try { el.focus({ preventScroll: true }); } catch (e) { el.focus(); } }
+  }
+  var FOCUS_KEYS = ['data-exec', 'data-crit', 'data-pend', 'data-pov', 'data-edit-custom', 'data-include-custom'];
+  /** Como reencontrar o elemento que tinha o foco depois que a tela for redesenhada (por id ou data-*). */
+  function focusKey(el) {
+    if (!el || el === document.body || !el.closest) return null;
+    var key = { id: el.id || '', act: el.getAttribute('data-act') || '', owner: null };
+    for (var i = 0; i < FOCUS_KEYS.length && !key.owner; i++) {
+      var o = el.closest('[' + FOCUS_KEYS[i] + ']');
+      if (o) key.owner = { attr: FOCUS_KEYS[i], value: o.getAttribute(FOCUS_KEYS[i]) };
+    }
+    return key;
+  }
+  function refocus(prev, key) {
+    var target = prev && document.body.contains(prev) ? prev : null;
+    if (!target && key) {
+      if (key.owner) {
+        var owner = qsa('[' + key.owner.attr + ']').filter(function (x) { return x.getAttribute(key.owner.attr) === key.owner.value; })[0];
+        if (owner) target = (key.act && owner.querySelector('[data-act="' + key.act + '"]')) || (owner.hasAttribute(key.owner.attr) && owner.tabIndex >= 0 ? owner : owner.querySelector('button, a, input, [tabindex]')) || owner;
+      }
+      if (!target && key.id) target = document.getElementById(key.id);
+    }
+    if (target && target.focus) { try { target.focus({ preventScroll: true }); } catch (e) { /* elemento sumiu */ } }
+  }
+  function focusables(root) {
+    return qsa('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])', root).filter(function (x) {
+      return !x.disabled && x.type !== 'hidden' && x.offsetParent !== null;
+    });
+  }
+  /**
+   * Abre um modal. o: {title (HTML já escapado), sub (HTML), body, footer (HTML), wide, cls, isDirty(), onClose()}.
+   * Devolve {el, $, close, requestClose, busy}. Esc e clique fora chamam requestClose (que confirma se houver rascunho).
+   */
+  function openModal(o) {
+    var bg = document.createElement('div');
+    bg.className = 'modal-bg';
+    var m = document.createElement('div');
+    var tid = 'modal-t-' + (++modalSeq);
+    m.className = 'modal' + (o.wide ? ' wide' : '') + (o.cls ? ' ' + o.cls : '');
+    m.setAttribute('role', 'dialog');
+    m.setAttribute('aria-modal', 'true');
+    m.setAttribute('aria-labelledby', tid);
+    if (o.id) m.id = o.id;
+    m.innerHTML = '<div class="modal-head"><div class="mh-text"><h3 id="' + tid + '">' + o.title + '</h3>' + (o.sub ? '<div class="sub">' + o.sub + '</div>' : '') + '</div>' +
+      '<button type="button" class="x ghost" aria-label="Fechar">×</button></div>' +
+      '<div class="modal-body">' + (o.body || '') + '</div>' + (o.footer ? '<div class="actions">' + o.footer + '</div>' : '');
+    bg.appendChild(m);
+    $('modal-root').appendChild(bg);
+    var prevFocus = document.activeElement;
+    var prevKey = focusKey(prevFocus);
+    var h = { el: m, closed: false };
+    h.$ = function (sel) { return m.querySelector(sel); };
+    h.close = function () {
+      if (h.closed) return;
+      h.closed = true;
+      bg.parentNode && bg.parentNode.removeChild(bg);
+      var i = modals.indexOf(h);
+      if (i >= 0) modals.splice(i, 1);
+      document.body.classList.toggle('modal-open', modals.length > 0);
+      if (o.onClose) o.onClose();
+      // depois do redesenho (setView logo após fechar), devolve o foco ao mesmo elemento ou ao equivalente
+      setTimeout(function () { if (!modals.length) refocus(prevFocus, prevKey); else if (topModal().el.contains(prevFocus)) refocus(prevFocus, null); }, 0);
+    };
+    h.requestClose = function () {
+      if (o.isDirty && o.isDirty()) {
+        askConfirm('Descartar as alterações?', 'Há alterações não salvas nesta janela. Se fechar agora, elas se perdem.', { ok: 'Descartar', cancel: 'Continuar editando', danger: true })
+          .then(function (ok) { if (ok) h.close(); });
+      } else h.close();
+    };
+    h.busy = function (on) {
+      qsa('.actions button', m).forEach(function (b) {
+        if (on) { b.setAttribute('data-was', b.disabled ? '1' : ''); b.disabled = true; } else if (b.hasAttribute('data-was')) { b.disabled = b.getAttribute('data-was') === '1'; b.removeAttribute('data-was'); }
+      });
+    };
+    m.querySelector('.x').addEventListener('click', function () { h.requestClose(); });
+    bg.addEventListener('mousedown', function (e) { if (e.target === bg) h.requestClose(); });
+    // foco preso no modal (Tab e Shift+Tab circulam dentro dele)
+    m.addEventListener('keydown', function (e) {
+      if (e.key !== 'Tab') return;
+      var f = focusables(m);
+      if (!f.length) { e.preventDefault(); return; }
+      var first = f[0], last = f[f.length - 1];
+      if (e.shiftKey && (document.activeElement === first || !m.contains(document.activeElement))) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && (document.activeElement === last || !m.contains(document.activeElement))) { e.preventDefault(); first.focus(); }
+    });
+    modals.push(h);
+    document.body.classList.add('modal-open');
+    setTimeout(function () { if (!h.closed) focusFirst(m); }, 0);
+    return h;
+  }
+  function topModal() { return modals.length ? modals[modals.length - 1] : null; }
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && modals.length) { e.preventDefault(); topModal().requestClose(); }
+  });
+  // se o foco escapar para o fundo (clique fora, leitor de tela), volta para o modal do topo
+  document.addEventListener('focusin', function (e) {
+    var top = topModal();
+    if (top && !top.el.contains(e.target) && !(e.target.closest && e.target.closest('#toast'))) focusFirst(top.el);
+  });
+
+  /** Confirmação dentro da página. Resolve true/false. */
+  function askConfirm(title, html, o) {
+    o = o || {};
+    return new Promise(function (resolve) {
+      var done = false;
+      var h = openModal({
+        title: esc(title), body: '<div class="confirm-body">' + html + '</div>', cls: 'narrow' + (o.cls ? ' ' + o.cls : ''), id: o.id,
+        footer: '<button type="button" class="ghost" data-act="no">' + esc(o.cancel || 'Cancelar') + '</button>' +
+          '<button type="button" class="' + (o.danger ? 'danger-solid' : 'primary') + '" data-act="yes" data-autofocus>' + esc(o.ok || 'Confirmar') + '</button>',
+        onClose: function () { if (!done) resolve(false); },
+      });
+      h.$('[data-act=no]').addEventListener('click', function () { h.close(); });
+      h.$('[data-act=yes]').addEventListener('click', function () { done = true; h.close(); resolve(true); });
+    });
+  }
+  /** Pede um texto (motivo, resolução…). Resolve o texto ou null. o: {sub, label, min, max, multiline, placeholder, ok, danger, value, minMsg}. */
+  function askText(title, o) {
+    o = o || {};
+    return new Promise(function (resolve) {
+      var done = false;
+      var max = o.max || LIMITS.medium;
+      var field = o.multiline
+        ? '<textarea id="ask-text" rows="3" maxlength="' + max + '" placeholder="' + esc(o.placeholder || '') + '">' + esc(o.value || '') + '</textarea>'
+        : '<input type="text" id="ask-text" maxlength="' + max + '" placeholder="' + esc(o.placeholder || '') + '" value="' + esc(o.value || '') + '"' + (o.list ? ' list="' + esc(o.list) + '"' : '') + '>';
+      var h = openModal({
+        title: esc(title), sub: o.sub || '', cls: 'narrow ask-modal',
+        body: '<div class="row"><label for="ask-text">' + esc(o.label || 'Motivo') + '</label>' + field + '<div class="field-err" id="ask-err" role="alert"></div></div>',
+        footer: '<button type="button" class="ghost" data-act="no">Cancelar</button><button type="button" class="' + (o.danger ? 'danger-solid' : 'primary') + '" data-act="yes">' + esc(o.ok || 'Confirmar') + '</button>',
+        onClose: function () { if (!done) resolve(null); },
+      });
+      function ok() {
+        var v = h.$('#ask-text').value.trim();
+        if (o.min && v.length < o.min) {
+          h.$('#ask-err').textContent = o.minMsg || ('Escreva ao menos ' + o.min + ' caracteres.');
+          h.$('#ask-text').focus();
+          return;
+        }
+        done = true;
+        h.close();
+        resolve(v);
+      }
+      h.$('[data-act=no]').addEventListener('click', function () { h.close(); });
+      h.$('[data-act=yes]').addEventListener('click', ok);
+      h.$('#ask-text').addEventListener('keydown', function (e) { if (e.key === 'Enter' && (!o.multiline || e.ctrlKey || e.metaKey)) { e.preventDefault(); ok(); } });
+    });
+  }
+  function infoModal(title, html) {
+    var h = openModal({ title: esc(title), body: html, cls: 'narrow', footer: '<button type="button" class="primary" data-act="ok" data-autofocus>Entendi</button>' });
+    h.$('[data-act=ok]').addEventListener('click', function () { h.close(); });
+    return h;
+  }
+  /**
+   * Formulário em modal. o: {title, sub, body, ok, danger, wide, cls, id, onOk(h) → Promise|undefined, dirtyCheck: true}.
+   * Com dirtyCheck, fechar com campos alterados pede confirmação.
+   */
+  function formModal(o) {
+    var snap = null;
+    var h = openModal({
+      title: o.title, sub: o.sub, body: o.body, wide: o.wide, cls: o.cls, id: o.id,
+      footer: (o.footerLeft || '') + '<button type="button" class="ghost" data-act="cancel">Cancelar</button>' +
+        '<button type="button" class="' + (o.danger ? 'danger-solid' : 'primary') + '" data-act="ok">' + esc(o.ok || 'Salvar') + '</button>',
+      isDirty: function () { return o.dirtyCheck !== false && snap !== null && formSnapshot(h.el) !== snap; },
+    });
+    snap = formSnapshot(h.el);
+    h.markClean = function () { snap = formSnapshot(h.el); };
+    h.$('[data-act=cancel]').addEventListener('click', function () { h.requestClose(); });
+    var inFlight = false;
+    function submit() {
+      // Ctrl+Enter repetido ou clique duplo nunca gravam duas vezes
+      if (inFlight || h.closed) return;
+      inFlight = true;
+      var p;
+      try { p = o.onOk(h); } catch (e) { inFlight = false; fail(e); return; }
+      if (p && p.then) {
+        h.busy(true);
+        p.then(function () { inFlight = false; if (!h.closed) h.busy(false); }, function (e) { inFlight = false; if (!h.closed) h.busy(false); fail(e); });
+      } else inFlight = false;
+    }
+    h.$('[data-act=ok]').addEventListener('click', submit);
+    h.el.addEventListener('keydown', function (e) { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); submit(); } });
+    return h;
+  }
+  function formSnapshot(root) {
+    return qsa('input, select, textarea', root).map(function (el) { return el.type === 'checkbox' || el.type === 'radio' ? (el.checked ? '1' : '0') : el.value; }).join('\u0001');
+  }
+  function fv(h, id) { var el = h.$('#' + id); return el ? String(el.value || '').trim() : ''; }
+  function invalid(h, id, msg) {
+    var el = h.$('#' + id);
+    if (el) { el.classList.add('invalid'); el.focus(); el.addEventListener('input', function () { el.classList.remove('invalid'); }, { once: true }); }
+    toast(msg, true);
+    return Promise.resolve();
+  }
+  /**
+   * Campos de um formulário de edição ligados às chaves do registro: fields = [[id do input, chave, tipo]]
+   * (tipo 'lines' = uma linha por item; 'checks' = checkboxes dentro do elemento). Guarda os valores da
+   * abertura para que a gravação mande só o que o usuário mudou (sem desfazer o que outra pessoa gravou) e,
+   * num conflito, coloca os valores novos do servidor nos campos que o usuário não mexeu.
+   */
+  function fieldTracker(h, fields) {
+    var base = {};
+    function el(f) { return h.$('#' + f[0]); }
+    function norm(f, v) {
+      if (f[2] === 'lines') return (Array.isArray(v) ? v : lines(v)).map(function (x) { return String(x).trim(); }).filter(Boolean).join('\n');
+      if (f[2] === 'checks') return (Array.isArray(v) ? v : []).slice().sort().join(',');
+      return String(v == null ? '' : v).trim();
+    }
+    function read(f) {
+      var e = el(f);
+      if (!e) return undefined;
+      if (f[2] === 'checks') return norm(f, qsa('input[type=checkbox]:checked', e).map(function (x) { return x.value; }));
+      return norm(f, e.value);
+    }
+    function write(f, v) {
+      var e = el(f);
+      if (!e) return;
+      if (f[2] === 'checks') { var ids = v ? v.split(',') : []; qsa('input[type=checkbox]', e).forEach(function (x) { x.checked = ids.indexOf(x.value) >= 0; }); return; }
+      e.value = v;
+    }
+    fields.forEach(function (f) { base[f[1]] = read(f); });
+    var t = {};
+    /** Chaves que o usuário mudou desde a abertura (ou desde o último refresh). */
+    t.changed = function () { return fields.filter(function (f) { var v = read(f); return v !== undefined && v !== base[f[1]]; }).map(function (f) { return f[1]; }); };
+    /** Valor atual (arrays para 'lines'/'checks'). */
+    t.value = function (key) {
+      var f = fields.filter(function (x) { return x[1] === key; })[0];
+      var v = read(f);
+      return f[2] === 'lines' ? (v ? v.split('\n') : []) : f[2] === 'checks' ? (v ? v.split(',') : []) : v;
+    };
+    /** Depois de um conflito: valores novos do servidor nos campos intocados; os que colidem ficam marcados. */
+    t.refresh = function (row) {
+      if (!row) return;
+      fields.forEach(function (f) {
+        if (read(f) === undefined || row[f[1]] === undefined) return;
+        var sv = norm(f, row[f[1]]);
+        if (read(f) === base[f[1]]) { write(f, sv); base[f[1]] = sv; return; }
+        if (sv !== base[f[1]]) {
+          var e = el(f);
+          e.classList.add('conflict-field');
+          e.title = 'Outra pessoa gravou: ' + (f[2] === 'checks' ? 'outros casos afetados' : sv || '(vazio)') + '. Se salvar, vale o seu valor.';
+        }
+      });
+    };
+    return t;
+  }
+  function fieldHtml(id, label, control, help) {
+    return '<div class="row"><label for="' + id + '">' + label + '</label>' + control + (help ? '<div class="help">' + help + '</div>' : '') + '</div>';
+  }
+  function inputHtml(id, value, o) {
+    o = o || {};
+    return '<input type="' + (o.type || 'text') + '" id="' + id + '" value="' + esc(value || '') + '"' + (o.max ? ' maxlength="' + o.max + '"' : '') +
+      (o.placeholder ? ' placeholder="' + esc(o.placeholder) + '"' : '') + (o.list ? ' list="' + o.list + '"' : '') + (o.disabled ? ' disabled' : '') + '>';
+  }
+  function textareaHtml(id, value, o) {
+    o = o || {};
+    return '<textarea id="' + id + '" rows="' + (o.rows || 3) + '"' + (o.max ? ' maxlength="' + o.max + '"' : '') + (o.placeholder ? ' placeholder="' + esc(o.placeholder) + '"' : '') +
+      (o.disabled ? ' disabled' : '') + '>' + esc(value || '') + '</textarea>';
+  }
+  function selectHtml(id, options, value, o) {
+    o = o || {};
+    return '<select id="' + id + '"' + (o.disabled ? ' disabled' : '') + '>' + options.map(function (op) {
+      return '<option value="' + esc(op[0]) + '"' + (String(op[0]) === String(value == null ? '' : value) ? ' selected' : '') + '>' + esc(op[1]) + '</option>';
+    }).join('') + '</select>';
+  }
+
+  // ============================================================ navegação e topo
+  function show(view) {
+    state.view = view;
+    ['boot', 'povs', 'nolib', 'pov', 'admin'].forEach(function (v) { $('view-' + v).classList.toggle('hidden', v !== view); });
+    renderCrumbs();
+    window.scrollTo(0, 0);
+  }
+  function renderCrumbs() {
+    var c = $('crumbs');
+    if (state.view === 'pov' && state.pov) {
+      c.innerHTML = '<a href="#" data-nav="home">PoVs</a> <span class="sep">›</span> <b>' + esc(state.pov.pov.cliente) + ' — ' + esc(state.pov.pov.titulo) + '</b>';
+    } else if (state.view === 'admin') {
+      c.innerHTML = '<a href="#" data-nav="home">PoVs</a> <span class="sep">›</span> <b>Administração</b>';
+    } else {
+      c.innerHTML = '<b>PoVs</b>';
+    }
+  }
+  $('crumbs').addEventListener('click', function (e) {
+    var a = e.target.closest('[data-nav]');
+    if (!a) return;
+    e.preventDefault();
+    goHome();
+  });
+  $('brand-home').addEventListener('click', function (e) { e.preventDefault(); goHome(); });
+  $('btn-admin').addEventListener('click', function () { openAdmin(); });
+  $('btn-back-app').addEventListener('click', function () { goHome(); });
+  $('btn-client-mode').addEventListener('click', function () {
+    state.clientMode = !state.clientMode;
+    lsSet(LS_CLIENT, state.clientMode ? '1' : '0');
+    // a pré-visualização (de qualquer aba) é descartada na hora: nada interno fica à mostra enquanto a nova carrega
+    state.rep.seq++;
+    clearPreview();
+    applyClientMode();
+    rerenderCurrent();
+    toast(state.clientMode ? 'Modo cliente ligado: campos internos ocultos.' : 'Modo cliente desligado.');
+  });
+  function applyClientMode() {
+    var on = state.clientMode;
+    var b = $('btn-client-mode');
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-checked', on ? 'true' : 'false');
+    $('client-banner').classList.toggle('hidden', !on);
+    document.body.classList.toggle('client-mode', on);
+  }
+  function rerenderCurrent() {
+    if (state.view === 'povs') renderPovs();
+    else if (state.view === 'pov' && state.pov) {
+      if (state.clientMode && state.tab === 'historico') state.tab = 'exec';
+      if (state.clientMode) state.rep.publico = 'cliente';
+      renderPovPage(true);
+    } else if (state.view === 'admin' && state.adminInfo) renderAdmin();
+  }
+
+  // ============================================================ boot
+  function boot() {
+    applyClientMode();
+    api('apiBootstrap').then(function (b) {
+      state.user = b.user;
+      state.admin = !!b.admin;
+      state.visibilidade = b.visibilidade;
+      state.libraryLoaded = !!b.library_loaded;
+      state.importIncompleto = !!b.import_incompleto;
+      state.appVersion = b.app_version;
+      $('user-email').textContent = b.user;
+      $('exec-mine-wrap').title = 'Casos cujo Responsável tem o seu e-mail (' + b.user + ')' + (myNameKey() ? ' ou o seu nome ("' + myNameKey() + '")' : '');
+      setCatalog(b.catalog);
+      state.allPovs = b.povs || [];
+      state.povs = state.allPovs;
+      fillPovStatusSelect();
+      if (!b.library_loaded) {
+        if (b.admin) { openAdmin(); toast('A biblioteca de test cases ainda não foi importada. Importe o JSON do coletor ou carregue a demonstração.'); }
+        else show('nolib');
+        return;
+      }
+      renderPovs();
+      show('povs');
+    }).catch(function (e) {
+      $('view-boot').innerHTML = '<div class="empty big"><h2>Não foi possível abrir o PoV Runner</h2><p>' + esc(e.message) + '</p></div>';
+      show('boot');
+    });
+  }
+  /** Recarrega bootstrap (catálogo e lista) — depois de importar a biblioteca. */
+  function reloadBootstrap() {
+    return api('apiBootstrap').then(function (b) {
+      state.libraryLoaded = !!b.library_loaded;
+      state.importIncompleto = !!b.import_incompleto;
+      setCatalog(b.catalog);
+      state.allPovs = b.povs || [];
+      state.povs = state.allPovs;
+      state.plan.sel = {};
+      state.plan.checked = {};
+    });
+  }
+
+  // ============================================================ PoVs (início)
+  function fillPovStatusSelect() {
+    var sel = $('pov-status');
+    sel.innerHTML = '<option value="">Todos os status</option>' + ['planning', 'running', 'done', 'cancelled'].map(function (s) { return '<option value="' + s + '">' + esc(povStatusLabel(s)) + '</option>'; }).join('');
+    sel.value = state.povFilter.status;
+  }
+  function goHome() {
+    if (!state.libraryLoaded) {
+      if (state.admin) { openAdmin(); toast('Importe a biblioteca primeiro.', true); } else show('nolib');
+      return;
+    }
+    api('apiListPovs', {}).then(function (list) {
+      state.allPovs = list;
+      return loadPovList();
+    }).then(function () { renderPovs(); show('povs'); }).catch(fail);
+  }
+  function povFilterActive() { var f = state.povFilter; return !!(f.q || f.status || f.mine); }
+  function loadPovList() {
+    if (!povFilterActive()) { state.povs = state.allPovs; return Promise.resolve(); }
+    return api('apiListPovs', { q: state.povFilter.q, status: state.povFilter.status, mine: state.povFilter.mine }).then(function (list) { state.povs = list; });
+  }
+  var reloadPovList = debounce(function () { loadPovList().then(renderPovList).catch(fail); }, 250);
+  $('pov-q').addEventListener('input', function (e) { state.povFilter.q = e.target.value; reloadPovList(); });
+  $('pov-status').addEventListener('change', function (e) { state.povFilter.status = e.target.value; loadPovList().then(renderPovList).catch(fail); });
+  $('pov-mine').addEventListener('change', function (e) { state.povFilter.mine = e.target.checked; loadPovList().then(renderPovList).catch(fail); });
+  $('btn-new-pov').addEventListener('click', function () { openPovForm(null); });
+
+  function renderPovs() {
+    var banners = '';
+    var meta = state.catalog ? state.catalog.meta : null;
+    if (meta && meta.is_demo) banners += '<div class="banner info">Biblioteca de <b>demonstração</b>: casos sintéticos, só para experimentar o app. Um administrador pode importar a biblioteca real em Administração.</div>';
+    if (state.importIncompleto || (meta && meta.import_incompleto)) banners += '<div class="banner">A última importação da biblioteca não terminou. Um administrador precisa refazê-la em Administração; até lá, textos e contadores podem estar incompletos.</div>';
+    $('povs-banners').innerHTML = banners;
+    var all = state.allPovs;
+    function count(fn) { return all.filter(fn).length; }
+    var counters = [
+      ['info', count(function (p) { return p.status === 'planning'; }), 'Planejamento'],
+      ['info', count(function (p) { return p.status === 'running'; }), 'Em execução'],
+      ['ok', count(function (p) { return p.status === 'done'; }), 'Concluídas'],
+    ];
+    if (!state.clientMode) counters.push(['ok', count(function (p) { return p.desfecho === 'tech_win'; }), 'Vitórias técnicas']);
+    $('pov-counters').innerHTML = counters.map(function (c) { return '<div class="counter ' + c[0] + '"><div class="v">' + c[1] + '</div><div class="l">' + esc(c[2]) + '</div></div>'; }).join('');
+    $('pov-q').value = state.povFilter.q;
+    $('pov-status').value = state.povFilter.status;
+    $('pov-mine').checked = state.povFilter.mine;
+    renderPovList();
+  }
+  function progressBar(pr, cls) {
+    var total = pr.total || 0;
+    var segs = total ? PROGRESS_ORDER.map(function (s) {
+      var n = pr.por_status[s] || 0;
+      return n ? '<span class="p-' + s + '" style="width:' + (n / total * 100).toFixed(2) + '%"></span>' : '';
+    }).join('') : '';
+    var title = total ? PROGRESS_ORDER.concat(['not_started']).filter(function (s) { return pr.por_status[s]; }).map(function (s) { return execStatusLabel(s) + ': ' + pr.por_status[s]; }).join(' · ') : 'sem casos no plano';
+    return '<div class="progress' + (cls ? ' ' + cls : '') + '" title="' + esc(title) + '" role="img" aria-label="' + esc(title) + '">' + segs + '</div>';
+  }
+  function period(inicio, fim) {
+    if (!inicio && !fim) return '';
+    return (dateBr(inicio) || '…') + ' a ' + (dateBr(fim) || '…');
+  }
+  function renderPovList() {
+    var list = state.povs;
+    if (!list.length) {
+      $('pov-list').innerHTML = '<div class="empty">' + (povFilterActive() ? 'Nenhuma PoV com esses filtros.' : 'Nenhuma PoV ainda. Comece por <b>+ Nova PoV</b>.') + '</div>';
+      return;
+    }
+    $('pov-list').innerHTML = list.map(function (p) {
+      var pr = p.progress, c = p.criterios;
+      var badges = (p.plano_aceito ? '<span class="badge ok">plano aceito</span>' : '') + (p.plano_sem_aceite ? '<span class="badge warn">sem aceite formal</span>' : '') +
+        (!state.clientMode && p.desfecho_label ? '<span class="badge ' + (p.desfecho === 'tech_win' ? 'ok' : p.desfecho === 'tech_loss' ? 'bad' : '') + '">' + esc(p.desfecho_label) + '</span>' : '');
+      var metaParts = [period(p.inicio, p.fim_previsto), p.responsavel ? 'Responsável: ' + p.responsavel : '', !state.clientMode && p.oportunidade ? p.oportunidade : ''].filter(Boolean);
+      return '<div class="pov-card" data-pov="' + esc(p.pov_id) + '" tabindex="0" role="button" aria-label="Abrir ' + esc(p.cliente + ' — ' + p.titulo) + '">' +
+        '<div class="pc-main"><div class="pc-top"><span class="c">' + esc(p.cliente) + '</span><span class="st ' + esc(p.status) + '">' + esc(p.status_label) + '</span>' + badges + '</div>' +
+        '<div class="t">' + esc(p.titulo) + '</div><div class="m">' + esc(metaParts.join(' · ')) + '</div></div>' +
+        '<div class="pc-prog">' + progressBar(pr) + '<div class="pct">' + pr.pct_concluido + '% concluído · ' + pr.concluidos + '/' + pr.total + ' casos</div>' +
+        '<div class="pct sub">' + (pr.taxa_aprovacao !== null && pr.taxa_aprovacao !== undefined ? 'taxa de aprovação ' + pr.taxa_aprovacao + '%' : 'sem casos avaliados') +
+        (pr.bloqueados ? ' · ' + plural(pr.bloqueados, 'bloqueado', 'bloqueados') : '') + '</div></div>' +
+        '<div class="pc-crit"><div class="v ' + (!c.obrigatorios ? '' : c.obrigatorios_atendidos === c.obrigatorios ? 'all' : c.obrigatorios_atendidos ? 'part' : 'none') + '">' +
+        (c.obrigatorios ? c.obrigatorios_atendidos + '/' + c.obrigatorios : '—') + '</div><div class="l">' + (c.obrigatorios ? 'critérios obrigatórios atendidos' : c.total ? 'sem critérios obrigatórios' : 'sem critérios de sucesso') + '</div></div>' +
+        '</div>';
+    }).join('');
+  }
+  $('pov-list').addEventListener('click', function (e) {
+    var card = e.target.closest('.pov-card');
+    if (card) openPov(card.getAttribute('data-pov'));
+  });
+  $('pov-list').addEventListener('keydown', function (e) {
+    var card = e.target.closest('.pov-card');
+    if (card && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); openPov(card.getAttribute('data-pov')); }
+  });
+
+  // ------------------------------------------------------------ formulário da PoV (nova / editar)
+  function openPovForm(v) {
+    var p = v ? v.pov : {};
+    var edit = !!v;
+    var amb = state.catalog ? state.catalog.ambientes : [];
+    var visHelp = state.visibilidade === 'todos'
+      ? 'Hoje a visibilidade do app está em "todos": qualquer usuário autorizado vê todas as PoVs. A equipe continua registrada.'
+      : 'Controla quem vê e edita esta PoV: além de quem criou, do responsável e dos administradores, só os e-mails listados aqui.';
+    var body =
+      '<div class="row2">' + fieldHtml('np-cliente', 'Cliente *', inputHtml('np-cliente', p.cliente, { max: LIMITS.short, placeholder: 'ex.: Banco Exemplo' })) +
+      fieldHtml('np-titulo', 'Título *', inputHtml('np-titulo', p.titulo, { max: LIMITS.short, placeholder: 'ex.: PoV NGFW + SASE' })) + '</div>' +
+      (state.clientMode ? '' : fieldHtml('np-oportunidade', 'Oportunidade', inputHtml('np-oportunidade', p.oportunidade, { max: LIMITS.medium, placeholder: 'id/nome da oportunidade no CRM' }))) +
+      '<div class="row2">' + fieldHtml('np-responsavel', 'Responsável', inputHtml('np-responsavel', edit ? p.responsavel : state.user, { max: LIMITS.medium, placeholder: 'e-mail' })) +
+      fieldHtml('np-contato', 'Contato no cliente', inputHtml('np-contato', p.contato_cliente, { max: LIMITS.medium, placeholder: 'nome e cargo' })) + '</div>' +
+      fieldHtml('np-equipe', 'Equipe (e-mails separados por vírgula)', inputHtml('np-equipe', p.equipe, { max: LIMITS.medium, placeholder: 'ana@empresa.com, bruno@empresa.com' }), esc(visHelp)) +
+      '<div class="row3">' + fieldHtml('np-inicio', 'Início', inputHtml('np-inicio', p.inicio, { type: 'date' })) +
+      fieldHtml('np-fim', 'Fim previsto', inputHtml('np-fim', p.fim_previsto, { type: 'date' })) +
+      fieldHtml('np-ambiente', 'Ambiente', inputHtml('np-ambiente', p.ambiente, { max: LIMITS.short, list: 'np-amb-list', placeholder: 'onde os testes rodam' })) + '</div>' +
+      '<datalist id="np-amb-list">' + amb.map(function (a) { return '<option value="' + esc(a) + '">'; }).join('') + '</datalist>' +
+      fieldHtml('np-objetivo', 'Objetivo da PoV', textareaHtml('np-objetivo', p.objetivo, { rows: 3, max: LIMITS.long, placeholder: 'o que o cliente quer comprovar e para quem' })) +
+      (edit && !state.clientMode ? fieldHtml('np-obs', 'Observações internas', textareaHtml('np-obs', p.observacoes, { rows: 2, max: LIMITS.long, placeholder: 'não vão para documentos do cliente' })) : '');
+    var tracker = null;
+    var h0 = formModal({
+      title: edit ? 'Editar PoV' : 'Nova PoV', sub: edit ? esc(p.cliente + ' — ' + p.titulo) : 'Os critérios de sucesso, o plano e as pendências são definidos nas abas da PoV.',
+      body: body, ok: edit ? 'Salvar' : 'Criar PoV', id: 'pov-form',
+      onOk: function (h) {
+        var cur = {
+          cliente: fv(h, 'np-cliente'), titulo: fv(h, 'np-titulo'), responsavel: fv(h, 'np-responsavel'), contato_cliente: fv(h, 'np-contato'),
+          equipe: fv(h, 'np-equipe'), inicio: fv(h, 'np-inicio'), fim_previsto: fv(h, 'np-fim'), ambiente: fv(h, 'np-ambiente'), objetivo: fv(h, 'np-objetivo'),
+        };
+        if (h.$('#np-oportunidade')) cur.oportunidade = fv(h, 'np-oportunidade');
+        if (h.$('#np-obs')) cur.observacoes = fv(h, 'np-obs');
+        if (cur.cliente.length < 2) return invalid(h, 'np-cliente', 'Informe o cliente.');
+        if (cur.titulo.length < 2) return invalid(h, 'np-titulo', 'Informe o título da PoV.');
+        if (cur.inicio && cur.fim_previsto && cur.fim_previsto < cur.inicio) return invalid(h, 'np-fim', 'O fim previsto é anterior ao início.');
+        if (!edit) {
+          return api('apiSavePov', cur).then(function (view) {
+            h.markClean();
+            h.close();
+            toast('PoV criada. Defina os critérios de sucesso e monte o plano.');
+            enterPov(view, 'plano');
+          });
+        }
+        // edição: manda só o que mudou, para não desfazer o que outra pessoa gravou nos outros campos
+        var changed = tracker.changed();
+        if (!changed.length) { h.markClean(); h.close(); toast('Nenhuma alteração.'); return; }
+        if (editWouldRemoveMe(p, cur)) return invalid(h, 'np-equipe', 'Essa alteração tiraria você da PoV: mantenha seu e-mail em Responsável ou Equipe (ou peça a um administrador).');
+        var input = { pov_id: p.pov_id, expected_atualizado_em: state.povId === p.pov_id ? state.pov.pov.atualizado_em : p.atualizado_em };
+        changed.forEach(function (k) { input[k] = tracker.value(k); });
+        return api('apiSavePov', input).catch(conflictRefreshWith(function (view) { tracker.refresh(view.pov); })).then(function (view) {
+          h.markClean();
+          h.close();
+          setView(view);
+          toast('PoV atualizada.');
+        });
+      },
+    });
+    if (edit) {
+      tracker = fieldTracker(h0, [['np-cliente', 'cliente'], ['np-titulo', 'titulo'], ['np-oportunidade', 'oportunidade'], ['np-responsavel', 'responsavel'],
+        ['np-contato', 'contato_cliente'], ['np-equipe', 'equipe'], ['np-inicio', 'inicio'], ['np-fim', 'fim_previsto'], ['np-ambiente', 'ambiente'],
+        ['np-objetivo', 'objetivo'], ['np-obs', 'observacoes']]);
+    }
+  }
+  /** Quem não é administrador precisa continuar como criador, responsável ou equipe (o servidor também recusa). */
+  function editWouldRemoveMe(pov, cur) {
+    if (state.admin || state.visibilidade === 'todos') return false;
+    var me = String(state.user || '').toLowerCase();
+    if (!me || String(pov.criado_por || '').toLowerCase() === me) return false;
+    return String(cur.responsavel || '').toLowerCase().indexOf(me) < 0 && String(cur.equipe || '').toLowerCase().indexOf(me) < 0;
+  }
+
+  // ============================================================ página da PoV
+  function openPov(povId) {
+    return api('apiGetPov', povId).then(function (view) { enterPov(view); }).catch(fail);
+  }
+  function enterPov(view, tab) {
+    var changed = state.povId !== view.pov.pov_id;
+    if (changed) {
+      state.exec = { status: '', mine: false, today: false, q: '', selected: {} };
+      state.plan.sel = {};
+      state.plan.checked = {};
+      state.rep = { tipo: 'resultados', publico: state.clientMode ? 'cliente' : 'interno', detalhe: null, preview: null, seq: state.rep.seq + 1, lastSave: null };
+      clearPreview();
+    }
+    state.pov = view;
+    state.povId = view.pov.pov_id;
+    derive();
+    state.tab = tab || state.tabByPov[state.povId] || 'exec';
+    if (state.clientMode && state.tab === 'historico') state.tab = 'exec';
+    $('exec-q').value = state.exec.q;
+    $('exec-mine').checked = state.exec.mine;
+    $('exec-today').checked = state.exec.today;
+    show('pov');
+    renderPovPage(true);
+  }
+  /** Novo view do servidor: atualiza cabeçalho e a aba atual. */
+  function setView(view) {
+    if (!view || !view.pov) return;
+    if (view.pov.pov_id !== state.povId) { enterPov(view); return; }
+    state.pov = view;
+    derive();
+    // descarta seleção de casos que saíram do plano
+    Object.keys(state.exec.selected).forEach(function (id) { if (!state.d.items[id]) delete state.exec.selected[id]; });
+    renderCrumbs();
+    renderPovPage(false);
+  }
+  /**
+   * Conflito de concorrência numa gravação (PoV, critério, pendência, caso próprio): recarrega a PoV, deixa o
+   * formulário aberto receber os valores novos (onFresh) e repassa o erro com a orientação.
+   */
+  function conflictRefreshWith(onFresh) {
+    return function (e) {
+      if (e && /alterad[oa] por/.test(e.message) && state.povId) {
+        var msg = e.message + ' A tela foi atualizada com a versão atual; confira e salve de novo.';
+        return api('apiGetPov', state.povId).then(function (view) { setView(view); if (onFresh) onFresh(view); }, function () { /* o erro original já orienta */ })
+          .then(function () { throw new Error(msg); });
+      }
+      throw e;
+    };
+  }
+  var conflictRefresh = conflictRefreshWith(null);
+  function derive() {
+    var v = state.pov;
+    var d = { items: {}, n: {}, crit: {}, critN: {} };
+    var n = 0;
+    v.groups.forEach(function (g) { g.items.forEach(function (it) { d.items[it.exec_id] = it; d.n[it.exec_id] = ++n; }); });
+    v.criterios.list.forEach(function (c) { d.crit[c.crit_id] = c; d.critN[c.crit_id] = 'C' + c.n; });
+    state.d = d;
+  }
+  function renderPovPage(tabChanged) {
+    renderPovHeader();
+    renderTabs();
+    renderTab(tabChanged);
+  }
+  function renderPovHeader() {
+    var v = state.pov, p = v.pov, cm = state.clientMode;
+    var meta1 = [];
+    if (p.inicio || p.fim_previsto) meta1.push('Período: <b>' + esc(period(p.inicio, p.fim_previsto)) + '</b>');
+    meta1.push('Responsável: <b>' + esc(p.responsavel || '—') + '</b>');
+    if (p.equipe) meta1.push('Equipe: ' + esc(p.equipe));
+    if (p.ambiente) meta1.push('Ambiente: ' + esc(p.ambiente));
+    var meta2 = [];
+    if (p.contato_cliente) meta2.push('Contato no cliente: ' + esc(p.contato_cliente));
+    if (!cm && p.oportunidade) meta2.push('Oportunidade: ' + esc(p.oportunidade));
+    // mesma regra do relatório: sem aceite formal o motivo é anotação interna; no modo cliente o texto passa por redactText
+    function aceiteObs(obs, por) {
+      if (!obs || (cm && !por)) return '';
+      return ' — ' + esc(cm ? redactText(obs).text : obs);
+    }
+    var acc = '';
+    if (p.plano_aceite_em) {
+      acc += '<div class="m" id="pov-aceite-plano">' + (p.plano_aceite_por
+        ? 'Plano aceito em <b>' + esc(dateBr(p.plano_aceite_em)) + '</b> por <b>' + esc(p.plano_aceite_por) + '</b>'
+        : 'Execução iniciada em <b>' + esc(dateBr(p.plano_aceite_em)) + '</b> sem aceite formal do plano') + aceiteObs(p.plano_aceite_obs, p.plano_aceite_por) + '</div>';
+    }
+    // o aceite do resultado só vale para a PoV encerrada (reaberta, ela ainda está mudando)
+    if (p.status === 'done' && p.resultado_aceite_em) {
+      acc += '<div class="m" id="pov-aceite-resultado">' + (p.resultado_aceite_por
+        ? 'Resultado aceito em <b>' + esc(dateBr(p.resultado_aceite_em)) + '</b> por <b>' + esc(p.resultado_aceite_por) + '</b>'
+        : 'PoV encerrada em <b>' + esc(dateBr(p.resultado_aceite_em)) + '</b> sem aceite formal') + aceiteObs(p.resultado_aceite_obs, p.resultado_aceite_por) + '</div>';
+    }
+    if (!cm && v.desfecho_label) acc += '<div class="m">Desfecho: <b>' + esc(v.desfecho_label) + '</b>' + (p.competidor ? ' · contra ' + esc(p.competidor) : '') + '</div>';
+    var badges = (p.plano_aceite_em && p.plano_aceite_por ? '<span class="badge ok">plano aceito</span>' : '') +
+      (p.plano_aceite_em && !p.plano_aceite_por ? '<span class="badge warn">sem aceite formal</span>' : '') +
+      (!cm && v.desfecho_label ? '<span class="badge ' + (p.desfecho === 'tech_win' ? 'ok' : p.desfecho === 'tech_loss' ? 'bad' : '') + '">' + esc(v.desfecho_label) + '</span>' : '');
+    fillTeamEmails(p);
+    var acts = '<button id="btn-pov-edit" class="ghost"' + (v.locked ? ' disabled title="Reabra a PoV para editar"' : '') + '>Editar</button>';
+    if (p.status === 'planning') acts += '<button id="btn-accept-plan" class="primary">Registrar aceite do plano</button>';
+    if (p.status === 'running') acts += '<button id="btn-close-pov" class="primary">Encerrar PoV</button>';
+    if (v.locked) acts += '<button id="btn-reopen">Reabrir</button>';
+    if (p.status === 'planning' || p.status === 'running') acts += '<button id="btn-cancel-pov" class="danger">Cancelar PoV</button>';
+    $('pov-header').innerHTML =
+      '<div class="pov-head"><div class="ph-main">' +
+      '<div class="ph-title"><h1><span class="c">' + esc(p.cliente) + '</span> — ' + esc(p.titulo) + '</h1><span class="st ' + esc(p.status) + '">' + esc(v.pov_status_label) + '</span>' + badges + '</div>' +
+      '<div class="m">' + meta1.join(' <span class="sep">·</span> ') + '</div>' + (meta2.length ? '<div class="m">' + meta2.join(' <span class="sep">·</span> ') + '</div>' : '') + acc +
+      (p.objetivo ? '<div class="objetivo"><span class="k">Objetivo</span> ' + esc(cm ? redactText(p.objetivo).text : p.objetivo) + '</div>' : '') +
+      (!cm && p.observacoes ? '<div class="objetivo internal"><span class="k">Observações internas</span> ' + esc(p.observacoes) + '</div>' : '') +
+      (v.locked ? '<div class="locked-note">PoV ' + esc(v.pov_status_label.toLowerCase()) + ': tudo fica somente leitura. Use "Reabrir" para voltar a editar.</div>' : '') +
+      '</div><div class="ph-actions">' + acts + '</div></div>';
+    var on = function (id, fn) { var b = $(id); if (b) b.addEventListener('click', fn); };
+    on('btn-pov-edit', function () { openPovForm(state.pov); });
+    on('btn-accept-plan', openAcceptPlan);
+    on('btn-close-pov', openClosePov);
+    on('btn-reopen', reopenPov);
+    on('btn-cancel-pov', cancelPov);
+  }
+  /** E-mails da equipe (responsável e equipe da PoV, e o próprio usuário) para os campos Responsável. */
+  function teamEmails(p) {
+    var out = [];
+    [p.responsavel, p.equipe, state.user].forEach(function (t) {
+      (String(t || '').toLowerCase().match(/[a-z0-9._%+'-]+@[a-z0-9.-]+\.[a-z]{2,}/g) || []).forEach(function (e) { if (out.indexOf(e) < 0) out.push(e); });
+    });
+    return out;
+  }
+  function fillTeamEmails(p) {
+    $('team-emails').innerHTML = teamEmails(p).map(function (e) { return '<option value="' + esc(e) + '">'; }).join('');
+  }
+  function renderTabs() {
+    qsa('#pov-tabs button').forEach(function (b) {
+      var t = b.getAttribute('data-tab');
+      var hide = t === 'historico' && state.clientMode;
+      b.classList.toggle('hidden', hide);
+      b.classList.toggle('on', t === state.tab);
+      b.setAttribute('aria-selected', t === state.tab ? 'true' : 'false');
+      var n = '';
+      if (t === 'exec') n = state.pov.progress.total;
+      if (t === 'criterios') n = state.pov.criterios.total;
+      if (t === 'pendencias') n = state.pov.pendencias.filter(function (p) { return p.status === 'aberta'; }).length;
+      var label = { exec: 'Execução', plano: 'Plano', criterios: 'Critérios', pendencias: 'Pendências', relatorio: 'Relatório', historico: 'Histórico' }[t];
+      b.innerHTML = esc(label) + (n !== '' ? ' <span class="n">' + n + '</span>' : '');
+    });
+    ['exec', 'plano', 'criterios', 'pendencias', 'relatorio', 'historico'].forEach(function (t) { $('tab-' + t).classList.toggle('hidden', t !== state.tab); });
+  }
+  $('pov-tabs').addEventListener('click', function (e) {
+    var b = e.target.closest('button[data-tab]');
+    if (!b) return;
+    state.tab = b.getAttribute('data-tab');
+    state.tabByPov[state.povId] = state.tab;
+    renderTabs();
+    renderTab(true);
+  });
+  function renderTab(tabChanged) {
+    var t = state.tab;
+    if (t === 'exec') renderExec();
+    else if (t === 'plano') renderPlan(tabChanged);
+    else if (t === 'criterios') renderCrit();
+    else if (t === 'pendencias') renderPend();
+    else if (t === 'relatorio') renderRep(tabChanged);
+    else if (t === 'historico') renderHist();
+  }
+
+  // ------------------------------------------------------------ transições da PoV
+  function transition(action, input, okMsg) {
+    input.expected_atualizado_em = state.pov.pov.atualizado_em;
+    return api('apiTransitionPov', state.povId, action, input).catch(conflictRefresh).then(function (view) { setView(view); toast(okMsg); });
+  }
+  function acceptBlock(prefix, porLabel, semLabel) {
+    return '<div class="row2">' + fieldHtml(prefix + '-por', porLabel, inputHtml(prefix + '-por', '', { max: LIMITS.short, placeholder: 'ex.: Maria Silva (CISO)' })) +
+      fieldHtml(prefix + '-em', 'Data do aceite', inputHtml(prefix + '-em', todayIso(), { type: 'date' })) + '</div>' +
+      fieldHtml(prefix + '-obs', 'Observação', inputHtml(prefix + '-obs', '', { max: LIMITS.medium, placeholder: 'ex.: aceite por e-mail após a reunião' })) +
+      '<label class="check"><input type="checkbox" id="' + prefix + '-sem"> ' + esc(semLabel) + '</label>' +
+      '<div class="row hidden" id="' + prefix + '-motivo-row">' + '<label for="' + prefix + '-motivo">Motivo *</label>' + textareaHtml(prefix + '-motivo', '', { rows: 2, max: LIMITS.medium, placeholder: 'por que não há aceite formal' }) + '</div>';
+  }
+  function wireAcceptBlock(h, prefix) {
+    h.$('#' + prefix + '-sem').addEventListener('change', function (e) {
+      var sem = e.target.checked;
+      h.$('#' + prefix + '-motivo-row').classList.toggle('hidden', !sem);
+      ['-por', '-obs'].forEach(function (s) { h.$('#' + prefix + s).disabled = sem; });
+      if (sem) h.$('#' + prefix + '-motivo').focus();
+    });
+  }
+  function openAcceptPlan() {
+    var v = state.pov;
+    var sub = 'O plano tem ' + plural(v.progress.total, 'caso', 'casos') + ' e ' + plural(v.criterios.total, 'critério de sucesso', 'critérios de sucesso') + '. ' +
+      'Com o aceite, a PoV passa para <b>Em execução</b> e incluir ou remover casos passa a exigir motivo (fica registrado como mudança de escopo).';
+    var warn = !v.progress.total ? '<div class="banner">O plano ainda está vazio.</div>' : !v.criterios.total ? '<div class="banner">Nenhum critério de sucesso definido ainda.</div>' : '';
+    var h = formModal({
+      title: 'Registrar aceite do plano', sub: sub, body: warn + acceptBlock('ap', 'Aceito por (nome e cargo) *', 'Começar sem aceite formal'), ok: 'Registrar aceite', id: 'accept-form',
+      onOk: function (h) {
+        var sem = h.$('#ap-sem').checked;
+        var input = { em: fv(h, 'ap-em') };
+        if (sem) {
+          input.sem_aceite = true;
+          input.motivo = fv(h, 'ap-motivo');
+          if (input.motivo.length < 5) return invalid(h, 'ap-motivo', 'Explique por que a PoV começa sem aceite formal do plano.');
+        } else {
+          input.por = fv(h, 'ap-por');
+          input.obs = fv(h, 'ap-obs');
+          if (input.por.length < 2) return invalid(h, 'ap-por', 'Informe quem aceitou o plano no cliente (nome e cargo), ou marque "Começar sem aceite formal".');
+        }
+        return transition('aceitar_plano', input, 'Aceite registrado: PoV em execução.').then(function () { h.markClean(); h.close(); });
+      },
+    });
+    wireAcceptBlock(h, 'ap');
+  }
+  function openClosePov() {
+    var v = state.pov, p = v.pov, pr = v.progress, cs = v.criterios;
+    var pend = pr.total - pr.concluidos;
+    var sub = pr.concluidos + ' de ' + pr.total + ' casos concluídos' + (cs.obrigatorios ? ' · ' + cs.obrigatorios_atendidos + ' de ' + cs.obrigatorios + ' critérios obrigatórios atendidos' : '') +
+      '. Depois de encerrada, a PoV fica somente leitura (dá para reabrir).';
+    var body = (pend ? '<div class="banner">Ainda há ' + plural(pend, 'caso não concluído', 'casos não concluídos') + ' no plano.</div>' : '') +
+      fieldHtml('cp-resumo', 'Resumo executivo', textareaHtml('cp-resumo', p.resumo_executivo, { rows: 3, max: LIMITS.long, placeholder: 'o que foi comprovado, em duas ou três frases (vai para o relatório)' })) +
+      fieldHtml('cp-passos', 'Próximos passos', textareaHtml('cp-passos', p.proximos_passos, { rows: 2, max: LIMITS.long })) +
+      (state.clientMode ? '' : '<div class="row2 internal-block">' +
+        fieldHtml('cp-desfecho', 'Desfecho (interno)', selectHtml('cp-desfecho', POV_OUTCOMES.map(function (o) { return [o, outcomeLabel(o)]; }), p.desfecho || 'open')) +
+        fieldHtml('cp-competidor', 'Competidor (interno)', inputHtml('cp-competidor', p.competidor, { max: LIMITS.short, placeholder: 'contra quem a PoV foi decidida' })) + '</div>') +
+      '<h4 class="form-sub">Aceite do resultado</h4>' + acceptBlock('cr', 'Aceito por (nome e cargo)', 'Encerrar sem aceite formal');
+    var h = formModal({
+      title: 'Encerrar PoV', sub: esc(sub), body: body, ok: 'Encerrar PoV', id: 'close-form',
+      onOk: function (h) {
+        var sem = h.$('#cr-sem').checked;
+        var input = { resumo_executivo: fv(h, 'cp-resumo'), proximos_passos: fv(h, 'cp-passos'), aceite_em: fv(h, 'cr-em'),
+          desfecho: h.$('#cp-desfecho') ? h.$('#cp-desfecho').value : (p.desfecho || 'open'), competidor: h.$('#cp-competidor') ? fv(h, 'cp-competidor') : (p.competidor || '') };
+        if (sem) {
+          input.sem_aceite = true;
+          input.motivo = fv(h, 'cr-motivo');
+          if (input.motivo.length < 5) return invalid(h, 'cr-motivo', 'Explique por que a PoV termina sem aceite formal do resultado.');
+        } else {
+          input.aceite_por = fv(h, 'cr-por');
+          input.aceite_obs = fv(h, 'cr-obs');
+          if (input.aceite_por.length < 2) return invalid(h, 'cr-por', 'Informe quem aceitou o resultado no cliente, ou marque "Encerrar sem aceite formal".');
+        }
+        return transition('encerrar', input, 'PoV encerrada.').then(function () { h.markClean(); h.close(); });
+      },
+    });
+    wireAcceptBlock(h, 'cr');
+  }
+  function reopenPov() {
+    askText('Reabrir a PoV', { sub: 'A PoV volta para ' + (state.pov.pov.plano_aceite_em ? '"Em execução"' : '"Planejamento"') + ' e pode ser editada de novo. O motivo fica no histórico.',
+      label: 'Motivo *', min: 5, multiline: true, ok: 'Reabrir', minMsg: 'Explique por que a PoV está sendo reaberta (ao menos 5 caracteres).' })
+      .then(function (motivo) { if (motivo === null) return; return transition('reabrir', { motivo: motivo }, 'PoV reaberta.'); }).catch(fail);
+  }
+  function cancelPov() {
+    askText('Cancelar a PoV', { sub: 'A PoV fica com status "Cancelada" e somente leitura; nada é apagado.', label: 'Motivo *', min: 5, multiline: true, ok: 'Continuar', danger: true,
+      minMsg: 'Explique por que a PoV está sendo cancelada (ao menos 5 caracteres).' })
+      .then(function (motivo) {
+        if (motivo === null) return;
+        return askConfirm('Cancelar a PoV?', 'Confirma o cancelamento de <b>' + esc(state.pov.pov.cliente + ' — ' + state.pov.pov.titulo) + '</b>?', { ok: 'Cancelar PoV', cancel: 'Voltar', danger: true })
+          .then(function (ok) { if (ok) return transition('cancelar', { motivo: motivo }, 'PoV cancelada.'); });
+      }).catch(fail);
+  }
+
+  // ============================================================ aba Execução
+  function execBadges(it, opts) {
+    opts = opts || {};
+    var cm = state.clientMode, b = '';
+    if (it.custom) b += '<span class="badge custom">definido com o cliente</span>';
+    if (!cm && it.translation_pending) b += '<span class="badge warn">tradução pendente</span>';
+    if (it.caso_alterado && !it.orfao) b += '<span class="badge warn" title="Versão no plano: v' + esc(it.versao_caso) + ' · versão atual: v' + esc(it.versao_atual) + '">caso alterado</span>';
+    if (it.orfao) b += '<span class="badge bad">removido da biblioteca</span>';
+    if (it.tentativas > 1) b += '<span class="badge reexec" title="' + esc(it.tentativas + ' tentativas' + (it.primeiro_status ? '; primeiro resultado: ' + execStatusLabel(it.primeiro_status) : '')) + '">re-executado</span>';
+    if (opts.scope && it.incluido_apos_aceite) b += '<span class="badge" title="' + esc(it.motivo_escopo) + '">incluído após o aceite</span>';
+    return b;
+  }
+  function execFiltered(items) {
+    var F = state.exec, q = foldText(F.q).trim(), today = todayIso();
+    return items.filter(function (it) {
+      if (F.status && it.status !== F.status) return false;
+      if (F.mine && !isMine(it.responsavel)) return false;
+      if (F.today && it.data_prevista !== today) return false;
+      if (q) {
+        var hay = foldText([it.name, state.clientMode ? '' : it.name_en, it.responsavel].join(' '));
+        if (!q.split(/\s+/).every(function (w) { return hay.indexOf(w) >= 0; })) return false;
+      }
+      return true;
+    });
+  }
+  function renderExec() {
+    var v = state.pov, p = v.progress, cs = v.criterios;
+    var counters = [
+      ['', p.total, 'casos'], ['info', p.pct_concluido + '%', 'concluído'], ['ok', p.aprovados, 'aprovados'], ['warn', p.parciais, 'parciais'],
+      ['bad', p.reprovados, 'reprovados'], ['violet', p.bloqueados, 'bloqueados'],
+      ['ok', p.taxa_aprovacao === null || p.taxa_aprovacao === undefined ? '—' : p.taxa_aprovacao + '%', 'taxa de aprovação'],
+      [cs.obrigatorios && cs.obrigatorios_atendidos === cs.obrigatorios ? 'ok' : 'info', cs.obrigatorios ? cs.obrigatorios_atendidos + '/' + cs.obrigatorios : '—', 'critérios obrigatórios atendidos'],
+    ];
+    $('exec-counters').innerHTML = counters.map(function (c) { return '<div class="counter ' + c[0] + '"><div class="v">' + esc(c[1]) + '</div><div class="l">' + esc(c[2]) + '</div></div>'; }).join('') +
+      (p.aprovados_apos_reteste ? '<div class="counter-note">' + plural(p.aprovados_apos_reteste, 'caso aprovado', 'casos aprovados') + ' após re-teste</div>' : '');
+    renderExecFilter();
+    renderExecList();
+  }
+  /** Nome provável do usuário a partir do e-mail ("ana.souza@…" → "ana souza"), para o filtro "meus". */
+  function myNameKey() { return foldText(String(state.user || '').split('@')[0].replace(/[._-]+/g, ' ')).trim(); }
+  /** O Responsável é o usuário? Casa pelo e-mail ou pelo nome derivado do e-mail (palavras inteiras). */
+  function isMine(resp) {
+    var me = String(state.user || '').toLowerCase(), r = String(resp || '');
+    if (!me) return false;
+    if (r.toLowerCase().indexOf(me) >= 0) return true;
+    var name = myNameKey();
+    if (!name) return false;
+    var re = new RegExp('(^|[^a-z0-9])' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '($|[^a-z0-9])');
+    return re.test(foldText(r));
+  }
+  function renderExecFilter() {
+    var p = state.pov.progress, F = state.exec;
+    $('exec-filter').innerHTML = '<button type="button" data-st=""' + (F.status ? '' : ' class="on"') + ' aria-pressed="' + !F.status + '">Todos<span class="n">' + p.total + '</span></button>' +
+      EXEC_STATUSES.map(function (s) {
+        return '<button type="button" data-st="' + s + '" class="st-' + s + (F.status === s ? ' on' : '') + '" aria-pressed="' + (F.status === s) + '">' + esc(execStatusLabel(s)) + '<span class="n">' + (p.por_status[s] || 0) + '</span></button>';
+      }).join('');
+  }
+  $('exec-filter').addEventListener('click', function (e) {
+    var b = e.target.closest('button[data-st]');
+    if (!b) return;
+    var s = b.getAttribute('data-st');
+    state.exec.status = state.exec.status === s ? '' : s;
+    renderExecFilter();
+    renderExecList();
+  });
+  $('exec-mine').addEventListener('change', function (e) { state.exec.mine = e.target.checked; renderExecList(); });
+  $('exec-today').addEventListener('change', function (e) { state.exec.today = e.target.checked; renderExecList(); });
+  var execSearch = debounce(function () { renderExecList(); }, 150);
+  $('exec-q').addEventListener('input', function (e) { state.exec.q = e.target.value; execSearch(); });
+
+  function renderExecList() {
+    var v = state.pov, d = state.d, locked = v.locked, cm = state.clientMode, today = todayIso();
+    if (!v.progress.total) {
+      $('exec-list').innerHTML = '<div class="empty">O plano ainda não tem casos. ' + (locked ? '' : 'Monte o plano na aba <a href="#" data-goto="plano">Plano</a>.') + '</div>';
+      renderBulkBar();
+      return;
+    }
+    var html = '', shown = 0;
+    v.groups.forEach(function (g) {
+      var items = execFiltered(g.items);
+      if (!items.length) return;
+      shown += items.length;
+      var gp = g.progress;
+      var allSel = items.every(function (it) { return state.exec.selected[it.exec_id]; });
+      html += '<div class="group" data-group="' + esc(g.use_case_id) + '"><div class="group-title">' +
+        '<span class="gname">' + esc(g.name) + '</span>' + (g.path && g.path !== g.name ? '<span class="path">' + esc(g.path) + '</span>' : '') +
+        '<span class="n">' + gp.concluidos + '/' + gp.total + ' concluídos</span>' + progressBar(gp, 'mini') + '</div>' +
+        '<table class="ex"><thead><tr><th class="c-sel"><input type="checkbox" class="grp-sel" aria-label="Selecionar todos do grupo"' + (allSel ? ' checked' : '') + (locked ? ' disabled' : '') + '></th>' +
+        '<th class="c-n">#</th><th class="c-case">Caso</th><th class="c-prio">Prioridade</th><th class="c-resp">Responsável</th><th class="c-date">Data prevista</th><th class="c-st">Status</th>' +
+        '<th class="c-ck">Checklist</th><th class="c-crit">Critérios</th><th class="c-ev" title="Evidências">Evid.</th><th class="c-upd">Atualizado</th></tr></thead><tbody>' +
+        items.map(function (it) {
+          var sel = !!state.exec.selected[it.exec_id];
+          var crits = (it.criterios_ids || []).map(function (id) { return d.critN[id]; }).filter(Boolean);
+          var evs = (it.evidencias || []).filter(function (e) { return !cm || e.cliente === true; }).length;
+          var late = it.data_prevista && it.data_prevista < today && !isFinalStatus(it.status);
+          return '<tr data-exec="' + esc(it.exec_id) + '" tabindex="0" class="' + (sel ? 'sel' : '') + '">' +
+            '<td class="c-sel"><input type="checkbox" class="row-sel" aria-label="Selecionar ' + esc(it.name) + '"' + (sel ? ' checked' : '') + (locked ? ' disabled' : '') + '></td>' +
+            '<td class="c-n num">' + d.n[it.exec_id] + '</td>' +
+            '<td class="c-case"><div class="case-name">' + esc(it.name) + '</div>' + (!cm && it.name_en && it.name_en !== it.name ? '<div class="case-en">' + esc(it.name_en) + '</div>' : '') +
+            '<div class="badges">' + execBadges(it, { scope: true }) + '</div></td>' +
+            '<td class="c-prio"><span class="prio prio-' + esc(it.prioridade) + '">' + esc(it.prioridade_label) + '</span></td>' +
+            '<td class="c-resp small" title="' + esc(it.responsavel) + '">' + esc(it.responsavel || '—') + '</td>' +
+            '<td class="c-date num' + (it.data_prevista === today ? ' today' : late ? ' late' : '') + '">' + esc(dateBr(it.data_prevista) || '—') + (it.data_prevista === today ? '<div class="tiny">hoje</div>' : late ? '<div class="tiny">atrasado</div>' : '') + '</td>' +
+            '<td class="c-st"><span class="st ' + esc(it.status) + '">' + esc(it.status_label) + '</span></td>' +
+            '<td class="c-ck small">' + esc(it.resumo_checklist) + '</td>' +
+            '<td class="c-crit num">' + (crits.length ? crits.map(function (c) { return '<span class="crit-tag">' + c + '</span>'; }).join(' ') : '<span class="faint">—</span>') + '</td>' +
+            '<td class="c-ev num">' + (evs || '<span class="faint">0</span>') + '</td>' +
+            '<td class="c-upd num small" title="' + esc(it.atualizado_em ? dt(it.atualizado_em) + ' · ' + it.autor : '') + '">' + esc(rel(it.atualizado_em) || '—') + '</td></tr>';
+        }).join('') + '</tbody></table></div>';
+    });
+    if (!shown) html = '<div class="empty">Nenhum caso com esses filtros. <a href="#" data-clear-filters="1">Limpar filtros</a></div>';
+    $('exec-list').innerHTML = html;
+    renderBulkBar();
+  }
+  $('exec-list').addEventListener('click', function (e) {
+    var go = e.target.closest('[data-goto]');
+    if (go) { e.preventDefault(); switchTab(go.getAttribute('data-goto')); return; }
+    if (e.target.closest('[data-clear-filters]')) {
+      e.preventDefault();
+      state.exec.status = ''; state.exec.mine = false; state.exec.today = false; state.exec.q = '';
+      $('exec-q').value = ''; $('exec-mine').checked = false; $('exec-today').checked = false;
+      renderExecFilter(); renderExecList();
+      return;
+    }
+    if (e.target.closest('.c-sel')) {
+      if (e.target.classList.contains('c-sel')) { var cb = e.target.querySelector('input'); if (cb && !cb.disabled) { cb.checked = !cb.checked; cb.dispatchEvent(new Event('change', { bubbles: true })); } }
+      return;
+    }
+    var tr = e.target.closest('tr[data-exec]');
+    if (tr) openExecPanel(tr.getAttribute('data-exec'));
+  });
+  $('exec-list').addEventListener('keydown', function (e) {
+    var tr = e.target.closest('tr[data-exec]');
+    if (tr && e.target === tr && e.key === 'Enter') { e.preventDefault(); openExecPanel(tr.getAttribute('data-exec')); }
+  });
+  $('exec-list').addEventListener('change', function (e) {
+    var t = e.target;
+    if (t.classList.contains('row-sel')) {
+      var id = t.closest('tr').getAttribute('data-exec');
+      if (t.checked) state.exec.selected[id] = true; else delete state.exec.selected[id];
+      t.closest('tr').classList.toggle('sel', t.checked);
+      var grp = t.closest('.group');
+      var all = qsa('.row-sel', grp);
+      grp.querySelector('.grp-sel').checked = all.every(function (x) { return x.checked; });
+      renderBulkBar();
+    } else if (t.classList.contains('grp-sel')) {
+      qsa('.row-sel', t.closest('.group')).forEach(function (cb) {
+        var id2 = cb.closest('tr').getAttribute('data-exec');
+        cb.checked = t.checked;
+        cb.closest('tr').classList.toggle('sel', t.checked);
+        if (t.checked) state.exec.selected[id2] = true; else delete state.exec.selected[id2];
+      });
+      renderBulkBar();
+    }
+  });
+  function switchTab(tab) {
+    state.tab = tab;
+    state.tabByPov[state.povId] = tab;
+    renderTabs();
+    renderTab(true);
+    window.scrollTo(0, 0);
+  }
+
+  // ------------------------------------------------------------ ações em lote
+  function selectedIds() { return Object.keys(state.exec.selected).filter(function (id) { return state.d.items[id]; }); }
+  function renderBulkBar() {
+    var ids = selectedIds(), bar = $('bulk-bar');
+    if (!ids.length || state.pov.locked) { bar.classList.add('hidden'); bar.innerHTML = ''; return; }
+    var crits = state.pov.criterios.list;
+    var critOpts = crits.map(function (c) { return '<option value="' + esc(c.crit_id) + '">C' + c.n + ' — ' + esc(c.texto.length > 60 ? c.texto.slice(0, 60) + '…' : c.texto) + '</option>'; }).join('');
+    bar.innerHTML = '<div class="bulk-inner"><b>' + plural(ids.length, 'caso selecionado', 'casos selecionados') + '</b>' +
+      '<select id="bulk-prio" aria-label="Mudar prioridade"><option value="">Prioridade…</option>' + PRIORITIES.map(function (p) { return '<option value="' + p + '">' + esc(priorityLabel(p)) + '</option>'; }).join('') + '</select>' +
+      '<button type="button" id="bulk-resp">Responsável…</button><button type="button" id="bulk-date">Data prevista…</button>' +
+      (crits.length ? '<select id="bulk-crit-add" aria-label="Vincular critério"><option value="">Vincular critério…</option>' + critOpts + '</select>' +
+        '<select id="bulk-crit-rm" aria-label="Desvincular critério"><option value="">Desvincular critério…</option>' + critOpts + '</select>' : '') +
+      '<button type="button" id="bulk-na">Não aplicável…</button><button type="button" id="bulk-remove" class="danger">Remover do plano…</button>' +
+      '<button type="button" id="bulk-clear" class="ghost" title="Desmarcar todos os casos">Limpar</button></div>';
+    bar.classList.remove('hidden');
+  }
+  $('bulk-bar').addEventListener('change', function (e) {
+    var t = e.target;
+    if (!t.value) return;
+    if (t.id === 'bulk-prio') runBulk({ prioridade: t.value });
+    else if (t.id === 'bulk-crit-add') runBulk({ criterio_add: t.value });
+    else if (t.id === 'bulk-crit-rm') runBulk({ criterio_remove: t.value });
+  });
+  $('bulk-bar').addEventListener('click', function (e) {
+    var b = e.target.closest('button');
+    if (!b) return;
+    if (b.id === 'bulk-clear') { state.exec.selected = {}; renderExecList(); }
+    else if (b.id === 'bulk-resp') {
+      askText('Responsável pelos casos selecionados', { label: 'Responsável (de preferência o e-mail; vazio limpa)', max: LIMITS.short, ok: 'Aplicar', list: 'team-emails' })
+        .then(function (v) { if (v !== null) runBulk({ responsavel: v }); });
+    } else if (b.id === 'bulk-date') {
+      var h = formModal({
+        title: 'Data prevista dos casos selecionados', cls: 'narrow', body: fieldHtml('bd-date', 'Data prevista (vazio limpa)', inputHtml('bd-date', '', { type: 'date' })), ok: 'Aplicar', dirtyCheck: false,
+        onOk: function (h) { var dte = fv(h, 'bd-date'); h.close(); return runBulk({ data_prevista: dte }); },
+      });
+      return h;
+    } else if (b.id === 'bulk-na') {
+      askText('Marcar como Não aplicável', { sub: 'Os casos selecionados ficam "Não aplicável"; o motivo vai para o resultado obtido e para o histórico.', label: 'Motivo *', min: 3, multiline: true, ok: 'Marcar' })
+        .then(function (m) { if (m !== null) runBulk({ nao_aplicavel: { motivo: m } }); });
+    } else if (b.id === 'bulk-remove') {
+      removeExecs(selectedIds());
+    }
+  });
+  function runBulk(changes) {
+    var ids = selectedIds();
+    if (!ids.length) return Promise.resolve();
+    if (ids.length > LIMITS.planBatch) { toast('No máximo ' + LIMITS.planBatch + ' casos por ação em lote.', true); return Promise.resolve(); }
+    var expected = {};
+    ids.forEach(function (id) { expected[id] = state.d.items[id].atualizado_em; });
+    return api('apiBulkUpdate', state.povId, ids, changes, expected).then(function (res) {
+      setView(res.view);
+      var r = res.result;
+      if (r.conflicts && r.conflicts.length) showBulkConflicts(r.conflicts, r.updated);
+      else toast(plural(r.updated, 'caso atualizado', 'casos atualizados') + '.');
+    }).catch(function (e) { fail(e); renderBulkBar(); });
+  }
+  function showBulkConflicts(conflicts, updated) {
+    infoModal('Alguns casos não foram alterados',
+      '<p>' + plural(updated, 'caso foi atualizado', 'casos foram atualizados') + '. ' + plural(conflicts.length, 'caso foi alterado', 'casos foram alterados') +
+      ' por outra pessoa depois que você carregou a tela e ficou como estava:</p><ul class="conflict-list">' +
+      conflicts.map(function (c) { return '<li><b>' + esc(c.caso) + '</b> — ' + esc(c.autor || 'outra pessoa') + ' em ' + esc(dt(c.atualizado_em)) + '</li>'; }).join('') +
+      '</ul><p class="muted small">A tela já mostra a versão atual; refaça a ação nesses casos se ainda fizer sentido.</p>');
+  }
+  /** Remove execuções do plano (com motivo depois do aceite). Resolve true quando removeu. */
+  function removeExecs(ids) {
+    if (!ids.length) return Promise.resolve(false);
+    var ask = afterBaseline()
+      ? askText('Remover do plano', { sub: esc(scopeLead() + ' a remoção de ' + plural(ids.length, 'caso', 'casos') + ' fica registrada como mudança de escopo. O que já foi registrado é preservado.'),
+        label: 'Motivo *', min: 3, multiline: true, ok: 'Remover do plano', danger: true })
+      : askConfirm('Remover do plano?', plural(ids.length, 'caso sai', 'casos saem') + ' do plano. O que já foi registrado fica guardado; incluir de novo pelo Plano reativa a mesma linha.', { ok: 'Remover', danger: true })
+        .then(function (ok) { return ok ? '' : null; });
+    return ask.then(function (motivo) {
+      if (motivo === null) return false;
+      return api('apiRemoveFromPlan', state.povId, ids, motivo).then(function (res) {
+        ids.forEach(function (id) { delete state.exec.selected[id]; });
+        setView(res.view);
+        toast(plural(res.result.removed, 'caso removido', 'casos removidos') + ' do plano.');
+        return true;
+      });
+    }).catch(function (e) { fail(e); return false; });
+  }
+
+  // ============================================================ painel de execução
+  var MARKS = { prereq: [true, false, 'na', null], step: [true, false, 'na', null], out: [true, false, 'na', null], met: [true, false, null] };
+  function markKey(v) { return v === true ? 'true' : v === false ? 'false' : v === 'na' ? 'na' : 'null'; }
+  function markVal(k) { return k === 'true' ? true : k === 'false' ? false : k === 'na' ? 'na' : null; }
+  function markShort(t, v) { return v === 'na' ? 'N/A' : v === null ? '—' : checkMarkLabel(t, v); }
+
+  function draftFrom(it) {
+    return {
+      status: it.status, prioridade: it.prioridade, responsavel: it.responsavel || '', data_prevista: it.data_prevista || '',
+      criterios_ids: (it.criterios_ids || []).slice(), escopo_cliente: it.escopo_cliente || '',
+      checklist: (it.checklist || []).map(function (c) { return { k: c.k, t: c.t, i: c.i, txt: c.txt || '', ok: c.ok === undefined ? null : c.ok, obs: c.obs || '', removido: !!c.removido }; }),
+      resultado_obtido: it.resultado_obtido || '',
+      evidencias: (it.evidencias || []).map(function (e) { return { label: e.label || '', url: e.url, cliente: e.cliente === true }; }),
+      ambiente: it.ambiente || '', executado_por: it.executado_por || '', testemunha: it.testemunha || '', observacoes: it.observacoes || '',
+      causa: it.causa || '', referencia: it.referencia || '',
+      nova_pendencia: { descricao: '', responsavel_tipo: 'cliente', responsavel_nome: '', prazo: '' },
+    };
+  }
+  function resetDraft(ctx, it) {
+    ctx.item = it;
+    ctx.draft = draftFrom(it);
+    ctx.orig = JSON.stringify(ctx.draft);
+  }
+  function audienceFields(it) {
+    var det = state.pov.details[it.test_case_id];
+    if (!det) return null;
+    return state.clientMode ? caseForAudience(det, 'cliente') : det;
+  }
+
+  function openExecPanel(execId) {
+    var it = state.d.items[execId];
+    if (!it) { toast('Caso não encontrado; recarregue a PoV.', true); return; }
+    var ctx = { execId: execId, conflict: null, locked: !!state.pov.locked };
+    resetDraft(ctx, it);
+    var h = openModal({
+      wide: true, cls: 'exec-modal', id: 'exec-panel', title: '<span id="ep-title">' + esc(it.name) + '</span>',
+      sub: '<span id="ep-sub"></span>',
+      body: '<div id="ep-conflict"></div><div class="exec-grid"><div class="case-doc" id="ep-doc"></div><div class="exec-form" id="ep-form"></div></div>',
+      footer: '<div class="left last-save" id="ep-last"></div>' +
+        (ctx.locked ? '' : '<button type="button" class="danger" id="ep-remove">Remover do plano</button>') +
+        '<button type="button" class="ghost" id="ep-cancel">' + (ctx.locked ? 'Fechar' : 'Cancelar') + '</button>' +
+        (ctx.locked ? '' : '<button type="button" class="primary" id="ep-save">Salvar</button>'),
+      isDirty: function () { return !ctx.locked && (JSON.stringify(ctx.draft) !== ctx.orig || pendingEvidence(ctx)); },
+    });
+    ctx.h = h;
+    renderPanel(ctx);
+    h.$('#ep-cancel').addEventListener('click', function () { h.requestClose(); });
+    if (!ctx.locked) {
+      h.$('#ep-save').addEventListener('click', function () { saveExec(ctx); });
+      h.$('#ep-remove').addEventListener('click', function () {
+        removeExecs([ctx.execId]).then(function (ok) { if (ok) h.close(); });
+      });
+      h.el.addEventListener('keydown', function (e) { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); saveExec(ctx); } });
+    }
+    wirePanelForm(ctx);
+    wirePanelDoc(ctx);
+  }
+  function renderPanel(ctx) {
+    var it = ctx.item, h = ctx.h;
+    var f = audienceFields(it);
+    h.$('#ep-title').textContent = f ? f.name : it.name;
+    var sub = [];
+    sub.push('#' + (state.d.n[ctx.execId] || '') + ' · ' + (state.pov.groups.filter(function (g) { return g.items.some(function (x) { return x.exec_id === ctx.execId; }); }).map(function (g) { return g.name; })[0] || ''));
+    if (ctx.locked) sub.push('PoV ' + state.pov.pov_status_label.toLowerCase() + ': somente leitura');
+    h.$('#ep-sub').textContent = sub.join(' · ');
+    h.$('#ep-last').innerHTML = it.autor ? 'Última gravação: <b>' + esc(it.autor) + '</b> · ' + esc(dt(it.atualizado_em)) : 'Ainda sem gravação';
+    h.$('#ep-doc').innerHTML = panelDocHtml(ctx, f);
+    h.$('#ep-form').innerHTML = panelFormHtml(ctx, f);
+    renderStatusDeps(ctx);
+    renderEvList(ctx);
+    renderConflict(ctx);
+  }
+
+  // ---- coluna esquerda: o caso literal
+  function docSec(title, html) { return html ? '<div class="k">' + esc(title) + '</div>' + html : ''; }
+  function panelDocHtml(ctx, f) {
+    var it = ctx.item, cm = state.clientMode, h = '';
+    if (f && f.name_en && f.name_en !== f.name) h += '<div class="case-en big-en">' + esc(f.name_en) + '</div>';
+    h += '<div class="badges">' + execBadges(it, { scope: true }) +
+      (!cm && f && !f.custom && f.lifecycle_label ? '<span class="badge">' + esc(f.lifecycle_label) + ' · v' + esc(f.version) + '</span>' : '') + '</div>';
+    if (it.orfao) h += '<div class="notice bad">Este caso foi <b>removido da biblioteca</b>. O texto abaixo é o da última versão importada; o que já foi registrado continua valendo e vai para o relatório.</div>';
+    if (it.caso_alterado && !it.orfao) {
+      h += '<div class="notice warn">O caso mudou na biblioteca desde que entrou no plano (v' + esc(it.versao_caso) + ' → v' + esc(it.versao_atual) + '). ' +
+        'Atualizar ajusta o checklist à versão atual; marcações de itens que saíram ficam como "removidos".' +
+        (ctx.locked ? '' : '<div><button type="button" class="small" id="ep-refresh">Atualizar para a versão atual</button></div>') + '</div>';
+    }
+    if (it.incluido_apos_aceite && it.motivo_escopo) h += '<div class="notice">Incluído depois do aceite do plano — motivo: ' + esc(it.motivo_escopo) + '</div>';
+    if (!f) return h + '<p class="muted">O texto deste caso não está disponível na biblioteca atual.</p>' + attemptsHtml(ctx);
+    if (!isBlankText(f.summary)) h += docSec('Resumo', '<div class="pre">' + esc(f.summary) + '</div>');
+    if (!isBlankText(f.description)) h += docSec('Descrição', '<div class="pre">' + esc(f.description) + '</div>');
+    if (f.prerequisites && f.prerequisites.length) {
+      h += docSec('Pré-requisitos', '<ul>' + f.prerequisites.map(function (p) { return '<li><b>' + esc(p.name) + '</b>' + (p.description ? '<div class="muted small">' + esc(p.description) + '</div>' : '') + '</li>'; }).join('') + '</ul>');
+    }
+    if (f.objectives && f.objectives.length) {
+      var ol = '', open = false;
+      f.objectives.forEach(function (o) {
+        if (isHeaderItem(o)) {
+          if (isBlankText(o)) return;
+          if (open) { ol += '</ol>'; open = false; }
+          ol += '<div class="sub-k">' + esc(o) + '</div>';
+        } else {
+          if (!open) { ol += '<ol>'; open = true; }
+          ol += '<li class="pre">' + esc(o) + '</li>';
+        }
+      });
+      if (open) ol += '</ol>';
+      h += docSec('Objetivos e passos', ol);
+    }
+    if (!isBlankText(f.expected_outcome)) h += docSec('Resultado esperado', '<div class="pre">' + esc(f.expected_outcome) + '</div>');
+    if (!isBlankText(f.how_to)) h += docSec('Como testar', '<div class="pre">' + esc(f.how_to) + '</div>');
+    var mets = (f.evaluation_metrics || []).filter(function (m) { return !isBlankText(m); });
+    if (mets.length) h += docSec('Métricas de avaliação', '<ul>' + mets.map(function (m) { return '<li>' + esc(m) + '</li>'; }).join('') + '</ul>');
+    var docs = (f.docs || []).filter(function (x) { return safeUrl(x.url); });
+    if (docs.length) {
+      h += docSec('Documentação', '<ul class="docs">' + docs.map(function (x) {
+        return '<li>' + link(x.url, x.label) + (!cm && x.audience && x.audience !== 'customer' ? ' <span class="badge">interna</span>' : '') + (x.summary ? '<div class="muted small">' + esc(x.summary) + '</div>' : '') + '</li>';
+      }).join('') + '</ul>');
+    }
+    if (!cm) {
+      var notes = (f.notes || []).filter(function (n) { return !isBlankText(n); });
+      if (notes.length) h += docSec('Notas da biblioteca', '<ul>' + notes.map(function (n) { return '<li class="pre">' + esc(n) + '</li>'; }).join('') + '</ul>');
+      if (f.value_drivers && f.value_drivers.length) h += docSec('Value drivers', '<ul>' + f.value_drivers.map(function (x) { return '<li>' + esc(x) + '</li>'; }).join('') + '</ul>');
+      if (!f.custom) {
+        h += docSec('Testes de laboratório', f.lab_tests && f.lab_tests.length
+          ? '<ul>' + f.lab_tests.map(function (t) { return '<li><span class="lab ' + (t.result === 'pass' ? 'ok' : t.result === 'fail' ? 'bad' : '') + '">' + esc(t.result_label || t.result || '—') + '</span> em ' + esc(t.env) + (t.at ? ' · ' + esc(dateBr(t.at)) : '') + (t.by ? ' · ' + esc(t.by) : '') + '</li>'; }).join('') + '</ul>'
+          : '<div class="muted small">não testado no laboratório</div>');
+      }
+      if (f.competitors && f.competitors.length) {
+        h += docSec('Posicionamento oficial', '<ul>' + f.competitors.map(function (c) { return '<li><b>' + esc(c.name) + '</b>: <span class="stance ' + esc(c.stance) + '">' + esc(c.stance_label) + '</span>' + (c.note ? ' — ' + esc(c.note) : '') + '</li>'; }).join('') + '</ul>');
+      }
+      if (f.url) h += docSec('POV Companion', link(f.url, 'Abrir o caso no POV Companion ↗'));
+    }
+    return h + attemptsHtml(ctx);
+  }
+  function attemptsHtml(ctx) {
+    var list = (state.pov.tentativas || {})[ctx.execId] || [];
+    if (!list.length) return '';
+    var cm = state.clientMode, it = ctx.item;
+    if (cm) {
+      // o cliente vê só a linha de re-teste, como no relatório (sem resultados e executores das tentativas anteriores)
+      if (!(it.tentativas > 1)) return '';
+      var last = list[list.length - 1];
+      return '<div class="notice reteste" id="ep-reteste">Re-executado: tentativa ' + esc(it.tentativas) + ' em ' + esc(fmt(last.em, 'date')) +
+        (it.primeiro_status && it.primeiro_status !== it.status ? ' (primeiro resultado: ' + esc(execStatusLabel(it.primeiro_status)) + ')' : '') + '</div>';
+    }
+    return docSec('Tentativas', '<ul class="attempts">' + list.map(function (t) {
+      return '<li><span class="st ' + esc(t.status) + '">#' + esc(t.n) + ' ' + esc(t.status_label) + '</span> <span class="muted small">' + esc(dt(t.em)) + (t.executado_por ? ' · ' + esc(t.executado_por) : '') + '</span>' +
+        (!cm && (t.causa_label || t.referencia) ? '<div class="small">' + esc([t.causa_label ? 'causa: ' + t.causa_label : '', t.referencia].filter(Boolean).join(' · ')) + '</div>' : '') +
+        (t.resultado_obtido ? '<div class="small muted clamp">' + esc(cm ? redactText(t.resultado_obtido).text : t.resultado_obtido) + '</div>' : '') + '</li>';
+    }).join('') + '</ul>');
+  }
+  function wirePanelDoc(ctx) {
+    ctx.h.$('#ep-doc').addEventListener('click', function (e) {
+      if (e.target.id !== 'ep-refresh') return;
+      var go = function () {
+        return api('apiRefreshVersion', ctx.execId).then(function (view) {
+          setView(view);
+          var it = state.d.items[ctx.execId];
+          if (it) { ctx.conflict = null; resetDraft(ctx, it); renderPanel(ctx); }
+          toast('Caso atualizado para a versão atual da biblioteca.');
+        }).catch(fail);
+      };
+      if (JSON.stringify(ctx.draft) !== ctx.orig) {
+        askConfirm('Atualizar a versão do caso?', 'Suas alterações não salvas neste painel serão descartadas.', { ok: 'Atualizar mesmo assim', danger: true }).then(function (ok) { if (ok) go(); });
+      } else go();
+    });
+  }
+
+  // ---- coluna direita: o formulário
+  function panelFormHtml(ctx, f) {
+    var d = ctx.draft, dis = ctx.locked ? ' disabled' : '', cm = state.clientMode;
+    var h = '';
+    h += '<div class="ep-sec"><label id="ep-status-l">Status</label><div class="seg seg-status" id="ep-status" role="group" aria-labelledby="ep-status-l">' + EXEC_STATUSES.map(function (s) {
+      return '<button type="button" data-st="' + s + '" class="' + s + (d.status === s ? ' on' : '') + '"' + (d.status === s ? ' data-autofocus' : '') + ' aria-pressed="' + (d.status === s) + '"' + dis + '>' + esc(execStatusLabel(s)) + '</button>';
+    }).join('') + '</div><div class="hint" id="ep-hint"></div></div>';
+    h += '<div id="ep-blocked"></div><div id="ep-cause"></div>';
+    h += '<div class="row3">' +
+      '<div><label for="ep-prio">Prioridade</label><select id="ep-prio" data-f="prioridade"' + dis + '>' + PRIORITIES.map(function (p) { return '<option value="' + p + '"' + (d.prioridade === p ? ' selected' : '') + '>' + esc(priorityLabel(p)) + '</option>'; }).join('') + '</select></div>' +
+      '<div><label for="ep-resp">Responsável</label><input type="text" id="ep-resp" data-f="responsavel" list="team-emails" placeholder="e-mail da equipe" maxlength="' + LIMITS.short + '" value="' + esc(d.responsavel) + '"' + dis + '></div>' +
+      '<div><label for="ep-data">Data prevista</label><input type="date" id="ep-data" data-f="data_prevista" value="' + esc(d.data_prevista) + '"' + dis + '></div></div>';
+    var crits = state.pov.criterios.list;
+    h += '<div class="ep-sec"><label>Critérios de sucesso</label>' + (crits.length ? '<div class="crit-chips">' + crits.map(function (c) {
+      var on = has(d.criterios_ids, c.crit_id);
+      return '<label class="crit-chip' + (on ? ' on' : '') + '" title="' + esc(c.texto) + '"><input type="checkbox" data-crit="' + esc(c.crit_id) + '"' + (on ? ' checked' : '') + dis + '> <b>C' + c.n + '</b> ' + esc(c.texto.length > 70 ? c.texto.slice(0, 70) + '…' : c.texto) + '</label>';
+    }).join('') + '</div>' : '<div class="muted small">Nenhum critério de sucesso na PoV. Defina na aba Critérios.</div>') + '</div>';
+    h += '<div class="ep-sec"><label for="ep-escopo">Como executar neste cliente</label><textarea id="ep-escopo" data-f="escopo_cliente" rows="2" maxlength="' + LIMITS.long + '" placeholder="adaptações ao ambiente do cliente (vai para o plano de testes)"' + dis + '>' + esc(d.escopo_cliente) + '</textarea></div>';
+    h += '<div class="ep-sec"><div class="ck-head"><label>Checklist</label><span class="small muted" id="ep-ck-sum"></span></div><div id="ep-checklist">' + checklistHtml(ctx, f) + '</div></div>';
+    h += '<div class="ep-sec"><label for="ep-result">Resultado obtido</label><textarea id="ep-result" data-f="resultado_obtido" rows="4" maxlength="' + LIMITS.result + '" placeholder="o que aconteceu, com números (vai para o relatório)"' + dis + '>' + esc(d.resultado_obtido) + '</textarea></div>';
+    h += '<div class="ep-sec"><label>Evidências</label><div id="ep-ev-list"></div>' + (ctx.locked ? '' :
+      '<div class="ev-add"><input type="text" id="ep-ev-label" placeholder="Rótulo" maxlength="' + LIMITS.short + '" aria-label="Rótulo da evidência">' +
+      '<input type="url" id="ep-ev-url" placeholder="https://…" maxlength="' + LIMITS.url + '" aria-label="Link da evidência">' +
+      '<label class="check small"><input type="checkbox" id="ep-ev-cliente"' + (cm ? ' checked' : '') + '> mostrar ao cliente</label>' +
+      '<button type="button" id="ep-ev-add" class="small">Adicionar</button></div>' +
+      '<div class="ev-attach"><button type="button" id="ep-attach" class="small ghost">Anexar arquivo…</button><input type="file" id="ep-file" class="hidden">' +
+      '<span class="faint small">até ' + Math.round(LIMITS.uploadBytes / 1048576) + ' MB; o arquivo vai para a pasta da PoV no Drive</span></div>') + '</div>';
+    h += '<div class="row3">' +
+      '<div><label for="ep-amb">Ambiente</label><input type="text" id="ep-amb" data-f="ambiente" maxlength="' + LIMITS.short + '" value="' + esc(d.ambiente) + '" list="ep-amb-list"' + dis + '></div>' +
+      '<div><label for="ep-exec">Executado por</label><input type="text" id="ep-exec" data-f="executado_por" maxlength="' + LIMITS.short + '" value="' + esc(d.executado_por) + '"' + dis + '></div>' +
+      '<div><label for="ep-test">Testemunha do cliente</label><input type="text" id="ep-test" data-f="testemunha" maxlength="' + LIMITS.short + '" value="' + esc(d.testemunha) + '"' + dis + '></div></div>' +
+      '<datalist id="ep-amb-list">' + (state.catalog ? state.catalog.ambientes : []).map(function (a) { return '<option value="' + esc(a) + '">'; }).join('') + '</datalist>';
+    if (!cm) h += '<div class="ep-sec internal-block"><label for="ep-obs">Observações internas</label><textarea id="ep-obs" data-f="observacoes" rows="2" maxlength="' + LIMITS.long + '" placeholder="não vão para documentos do cliente"' + dis + '>' + esc(d.observacoes) + '</textarea></div>';
+    return h;
+  }
+  function checklistText(c, f) {
+    if (f) {
+      if (c.t === 'prereq' && f.prerequisites && f.prerequisites[c.i]) return f.prerequisites[c.i].name;
+      if (c.t === 'step' && f.objectives && f.objectives[c.i] !== undefined) return f.objectives[c.i];
+      if (c.t === 'out' && !isBlankText(f.expected_outcome)) return f.expected_outcome;
+      if (c.t === 'met' && f.evaluation_metrics && f.evaluation_metrics[c.i] !== undefined) return f.evaluation_metrics[c.i];
+    }
+    return state.clientMode ? redactText(c.txt).text : c.txt;
+  }
+  function checklistItemHtml(ctx, c, f) {
+    var dis = ctx.locked ? ' disabled' : '';
+    var marks = '<div class="marks" role="group" aria-label="Marcação">' + MARKS[c.t].map(function (v) {
+      return '<button type="button" class="mk mk-' + markKey(v) + (c.ok === v ? ' on' : '') + '" data-ok="' + markKey(v) + '" title="' + esc(checkMarkLabel(c.t, v)) + '" aria-pressed="' + (c.ok === v) + '"' + dis + '>' + esc(markShort(c.t, v)) + '</button>';
+    }).join('') + '</div>';
+    var ph = c.t === 'out' ? 'Observado (o que aconteceu)' : c.t === 'met' ? 'valor medido' : 'observação (opcional)';
+    var obs = '<input type="text" class="ck-obs' + (c.t === 'met' ? ' measured' : '') + '" data-k="' + esc(c.k) + '" value="' + esc(c.obs) + '" maxlength="' + LIMITS.obs + '" placeholder="' + ph + '" aria-label="' + ph + '"' + dis + '>';
+    return '<div class="ck-item ck-' + c.t + ' ' + 'is-' + markKey(c.ok) + '" data-k="' + esc(c.k) + '" data-t="' + c.t + '">' +
+      '<div class="txt pre">' + esc(checklistText(c, f)) + '</div>' +
+      (c.t === 'met' ? '<div class="ctl">' + obs + marks + '</div>' : '<div class="ctl">' + marks + obs + '</div>') + '</div>';
+  }
+  function checklistHtml(ctx, f) {
+    var d = ctx.draft;
+    var act = d.checklist.filter(function (c) { return !c.removido; });
+    if (!d.checklist.length) return '<div class="muted small">Este caso não tem itens avaliáveis (pré-requisitos, passos, resultado esperado ou métricas).</div>';
+    var h = '';
+    function group(title, t, inner) { return inner ? '<div class="ck-group ck-g-' + t + '"><div class="ck-gt">' + esc(title) + '</div>' + inner + '</div>' : ''; }
+    function of(t) { return act.filter(function (c) { return c.t === t; }); }
+    h += group('Pré-requisitos', 'prereq', of('prereq').map(function (c) { return checklistItemHtml(ctx, c, f); }).join(''));
+    var steps = '';
+    if (f && f.objectives && f.objectives.length) {
+      var byI = {};
+      of('step').forEach(function (c) { byI[c.i] = c; });
+      var used = {};
+      f.objectives.forEach(function (o, i) {
+        if (isHeaderItem(o)) { if (!isBlankText(o)) steps += '<div class="ck-sub">' + esc(o) + '</div>'; return; }
+        if (byI[i]) { steps += checklistItemHtml(ctx, byI[i], f); used[i] = true; }
+      });
+      of('step').forEach(function (c) { if (!used[c.i]) steps += checklistItemHtml(ctx, c, f); });
+    } else {
+      steps = of('step').map(function (c) { return checklistItemHtml(ctx, c, f); }).join('');
+    }
+    h += group('Passos', 'step', steps);
+    h += group('Resultado esperado', 'out', of('out').map(function (c) { return checklistItemHtml(ctx, c, f); }).join(''));
+    h += group('Métricas', 'met', of('met').map(function (c) { return checklistItemHtml(ctx, c, f); }).join(''));
+    var rem = d.checklist.filter(function (c) { return c.removido; });
+    if (rem.length && !state.clientMode) {
+      h += '<div class="ck-group ck-removed"><div class="ck-gt">Itens que saíram da biblioteca (somente leitura)</div>' + rem.map(function (c) {
+        return '<div class="ck-item removed"><div class="txt pre">' + esc(state.clientMode ? redactText(c.txt).text : c.txt) + '</div><div class="small muted">' + esc(CHECK_TYPE_PT[c.t] || c.t) + ' · ' +
+          esc(checkMarkLabel(c.t, c.ok)) + (c.obs ? ' · ' + esc(c.obs) : '') + '</div></div>';
+      }).join('') + '</div>';
+    }
+    return h;
+  }
+  function renderStatusDeps(ctx) {
+    var d = ctx.draft, h = ctx.h, cm = state.clientMode, dis = ctx.locked ? ' disabled' : '';
+    qsa('#ep-status button', h.el).forEach(function (b) { var on = b.getAttribute('data-st') === d.status; b.classList.toggle('on', on); b.setAttribute('aria-pressed', on ? 'true' : 'false'); });
+    renderHint(ctx);
+    var bl = h.$('#ep-blocked');
+    if (d.status === 'blocked') {
+      var open = state.pov.pendencias.filter(function (p) { return p.status === 'aberta' && has(p.exec_ids, ctx.execId); });
+      var np = d.nova_pendencia;
+      bl.innerHTML = '<div class="ep-box blocked-box"><div class="k">Pendências abertas vinculadas</div>' +
+        (open.length ? '<ul class="pend-mini">' + open.map(function (p) {
+          return '<li>' + esc(p.descricao) + ' <span class="muted small">— ' + esc(p.responsavel_label) + (p.responsavel_nome ? ' (' + esc(p.responsavel_nome) + ')' : '') +
+            (p.prazo ? ' · prazo ' + esc(dateBr(p.prazo)) : '') + '</span>' + (p.atrasada ? ' <span class="badge bad">atrasada</span>' : '') + '</li>';
+        }).join('') + '</ul>' : '<p class="small warn-text">Nenhuma pendência aberta vinculada. Para marcar como Bloqueado, registre abaixo o que falta, de quem e até quando.</p>') +
+        (ctx.locked ? '' : '<div class="k">' + (open.length ? 'Registrar outra pendência (opcional)' : 'Nova pendência *') + '</div>' +
+          '<input type="text" id="ep-np-desc" data-np="descricao" maxlength="' + LIMITS.medium + '" placeholder="o que falta (ex.: liberar a porta 443 no firewall do cliente)" value="' + esc(np.descricao) + '" aria-label="Descrição da pendência">' +
+          '<div class="row3 tight">' +
+          '<select id="ep-np-tipo" data-np="responsavel_tipo" aria-label="Responsável pela pendência">' + PENDING_OWNERS.map(function (o) { return '<option value="' + o + '"' + (np.responsavel_tipo === o ? ' selected' : '') + '>' + esc(pendingOwnerLabel(o)) + '</option>'; }).join('') + '</select>' +
+          '<input type="text" id="ep-np-nome" data-np="responsavel_nome" maxlength="' + LIMITS.short + '" placeholder="nome do responsável" value="' + esc(np.responsavel_nome) + '" aria-label="Nome do responsável">' +
+          '<input type="date" id="ep-np-prazo" data-np="prazo" value="' + esc(np.prazo) + '" aria-label="Prazo"></div>') + '</div>';
+    } else bl.innerHTML = '';
+    var ca = h.$('#ep-cause');
+    if (!cm && (d.status === 'fail' || d.status === 'partial' || d.status === 'blocked')) {
+      ca.innerHTML = '<div class="row2 internal-block"><div><label for="ep-causa">Causa (interno)</label><select id="ep-causa" data-f="causa"' + dis + '><option value="">—</option>' +
+        FAIL_CAUSES.map(function (c) { return '<option value="' + c + '"' + (d.causa === c ? ' selected' : '') + '>' + esc(causeLabel(c)) + '</option>'; }).join('') + '</select></div>' +
+        '<div><label for="ep-ref">Referência (TAC, JIRA, FR)</label><input type="text" id="ep-ref" data-f="referencia" maxlength="' + LIMITS.short + '" value="' + esc(d.referencia) + '"' + dis + '></div></div>';
+    } else ca.innerHTML = '';
+  }
+  function renderHint(ctx) {
+    var d = ctx.draft, el = ctx.h.$('#ep-hint');
+    var sug = suggestStatus(d.checklist);
+    ctx.h.$('#ep-ck-sum').textContent = d.checklist.length ? checklistSummary(d.checklist) : '';
+    var html;
+    if (!sug) html = 'Sugestão pelo checklist: <span class="faint">nenhuma ainda — marque os passos ou o resultado esperado.</span>';
+    else if (sug === d.status) html = 'Sugestão pelo checklist: <b>' + esc(execStatusLabel(sug)) + '</b> <span class="faint">(igual ao status escolhido)</span>';
+    else html = 'Sugestão pelo checklist: <b>' + esc(execStatusLabel(sug)) + '</b> ' +
+      (ctx.locked ? '' : '<button type="button" class="link-btn" id="ep-apply" data-sug="' + esc(sug) + '">aplicar</button>') + ' <span class="faint">— só uma dica; quem decide é você.</span>';
+    // só troca o HTML quando muda: um "change" (blur) no meio do clique não pode desanexar o botão "aplicar"
+    if (el.getAttribute('data-html') !== html) { el.innerHTML = html; el.setAttribute('data-html', html); }
+  }
+  function renderEvList(ctx) {
+    var el = ctx.h.$('#ep-ev-list'), cm = state.clientMode, dis = ctx.locked ? ' disabled' : '';
+    var hidden = 0;
+    var rows = ctx.draft.evidencias.map(function (e, idx) {
+      if (cm && !e.cliente) { hidden++; return ''; }
+      var u = safeUrl(e.url);
+      return '<div class="ev" data-idx="' + idx + '"><span class="ev-link">' + link(u, e.label || u) + '</span><span class="ev-host faint small">' + esc(urlHost_(u)) + '</span>' +
+        '<label class="check small"><input type="checkbox" class="ev-cli"' + (e.cliente ? ' checked' : '') + dis + '> mostrar ao cliente</label>' +
+        (ctx.locked ? '' : '<button type="button" class="small ghost ev-rm" aria-label="Remover evidência">remover</button>') + '</div>';
+    }).join('');
+    el.innerHTML = (rows || (hidden ? '' : '<div class="muted small">Nenhuma evidência ainda.</div>')) +
+      (hidden ? '<div class="faint small">' + plural(hidden, 'evidência interna oculta', 'evidências internas ocultas') + ' no modo cliente.</div>' : '');
+  }
+  function renderConflict(ctx) {
+    var el = ctx.h.$('#ep-conflict'), c = ctx.conflict;
+    if (!c) { el.innerHTML = ''; return; }
+    var s = c.server;
+    el.innerHTML = '<div class="conflict-box" role="alert"><div class="cb-msg"><b>Este caso foi alterado por ' + esc(s.autor || 'outra pessoa') + ' em ' + esc(dt(s.atualizado_em)) + '.</b> ' +
+      'Seu rascunho continua aqui. Veja o que está gravado agora e escolha.</div>' +
+      '<div class="cb-server">No servidor: <span class="st ' + esc(s.status) + '">' + esc(s.status_label) + '</span> · checklist ' + esc(s.resumo_checklist) +
+      ' · prioridade ' + esc(s.prioridade_label) + (s.responsavel ? ' · responsável ' + esc(s.responsavel) : '') + ' · ' + plural((s.evidencias || []).length, 'evidência', 'evidências') +
+      (s.resultado_obtido ? '<div class="clamp small">Resultado obtido: ' + esc(state.clientMode ? redactText(s.resultado_obtido).text : s.resultado_obtido) + '</div>' : '') + '</div>' +
+      '<div class="cb-actions"><button type="button" id="ep-discard" class="ghost">Descartar meu rascunho</button><button type="button" id="ep-overwrite" class="primary">Sobrescrever com meu rascunho</button></div></div>';
+    el.querySelector('#ep-discard').addEventListener('click', function () {
+      ctx.conflict = null;
+      resetDraft(ctx, s);
+      renderPanel(ctx);
+      api('apiGetPov', state.povId).then(function (view) {
+        setView(view);
+        var fresh = state.d.items[ctx.execId];
+        if (fresh && !ctx.h.closed && JSON.stringify(ctx.draft) === ctx.orig) { resetDraft(ctx, fresh); renderPanel(ctx); }
+      }).catch(fail);
+      toast('Rascunho descartado: o painel mostra a versão gravada.');
+    });
+    el.querySelector('#ep-overwrite').addEventListener('click', function () { saveExec(ctx, s.atualizado_em); });
+    ctx.h.el.querySelector('.modal-body').scrollTop = 0;
+  }
+
+  function wirePanelForm(ctx) {
+    var form = ctx.h.$('#ep-form');
+    var d = function () { return ctx.draft; };
+    form.addEventListener('click', function (e) {
+      if (ctx.locked) return;
+      var st = e.target.closest('#ep-status button[data-st]');
+      if (st) { d().status = st.getAttribute('data-st'); renderStatusDeps(ctx); return; }
+      if (e.target.id === 'ep-apply') { d().status = e.target.getAttribute('data-sug'); renderStatusDeps(ctx); toast('Status ajustado para a sugestão: ' + execStatusLabel(d().status) + '.'); return; }
+      var mk = e.target.closest('.ck-item button[data-ok]');
+      if (mk) {
+        var row = mk.closest('.ck-item'), k = row.getAttribute('data-k');
+        var item = d().checklist.filter(function (c) { return c.k === k; })[0];
+        if (!item) return;
+        var v = markVal(mk.getAttribute('data-ok'));
+        item.ok = item.ok === v && v !== null ? null : v;
+        qsa('button[data-ok]', row).forEach(function (b) { var on = markVal(b.getAttribute('data-ok')) === item.ok; b.classList.toggle('on', on); b.setAttribute('aria-pressed', on ? 'true' : 'false'); });
+        row.className = row.className.replace(/\bis-\w+/, 'is-' + markKey(item.ok));
+        renderHint(ctx);
+        return;
+      }
+      if (e.target.id === 'ep-ev-add') { addEvidence(ctx); return; }
+      if (e.target.closest('.ev-rm')) {
+        var idx = +e.target.closest('.ev').getAttribute('data-idx');
+        d().evidencias.splice(idx, 1);
+        renderEvList(ctx);
+        return;
+      }
+      if (e.target.id === 'ep-attach') { ctx.h.$('#ep-file').click(); }
+    });
+    function onField(e) {
+      var t = e.target;
+      if (ctx.locked) return;
+      if (t.id === 'ep-ev-url') t.classList.remove('invalid');
+      var f = t.getAttribute('data-f');
+      if (f) { d()[f] = t.value; return; }
+      var np = t.getAttribute('data-np');
+      if (np) { d().nova_pendencia[np] = t.value; return; }
+      if (t.classList.contains('ck-obs')) {
+        var k = t.getAttribute('data-k');
+        var item = d().checklist.filter(function (c) { return c.k === k; })[0];
+        if (item) { item.obs = t.value; renderHint(ctx); }
+        return;
+      }
+    }
+    form.addEventListener('input', onField);
+    form.addEventListener('change', function (e) {
+      var t = e.target;
+      if (ctx.locked) return;
+      onField(e);
+      if (t.hasAttribute('data-crit')) {
+        var id = t.getAttribute('data-crit');
+        var list = d().criterios_ids.filter(function (x) { return x !== id; });
+        if (t.checked) list.push(id);
+        d().criterios_ids = state.pov.criterios.list.map(function (c) { return c.crit_id; }).filter(function (x) { return has(list, x); });
+        t.closest('.crit-chip').classList.toggle('on', t.checked);
+        return;
+      }
+      if (t.classList.contains('ev-cli')) {
+        var idx = +t.closest('.ev').getAttribute('data-idx');
+        d().evidencias[idx].cliente = t.checked;
+        return;
+      }
+      if (t.id === 'ep-file' && t.files && t.files[0]) { attachFile(ctx, t.files[0]); t.value = ''; }
+    });
+    form.addEventListener('keydown', function (e) {
+      if ((e.target.id === 'ep-ev-url' || e.target.id === 'ep-ev-label') && e.key === 'Enter') { e.preventDefault(); addEvidence(ctx); }
+    });
+  }
+  function addEvidence(ctx) {
+    var h = ctx.h;
+    var label = h.$('#ep-ev-label').value.trim(), raw = h.$('#ep-ev-url').value.trim(), url = safeUrl(raw);
+    if (!url) { h.$('#ep-ev-url').classList.add('invalid'); h.$('#ep-ev-url').focus(); toast('Informe um link http:// ou https:// válido.', true); return; }
+    if (ctx.draft.evidencias.length >= LIMITS.evidences) { toast('No máximo ' + LIMITS.evidences + ' evidências por caso.', true); return; }
+    ctx.draft.evidencias.push({ label: label, url: url, cliente: h.$('#ep-ev-cliente').checked });
+    h.$('#ep-ev-label').value = '';
+    h.$('#ep-ev-url').value = '';
+    h.$('#ep-ev-url').classList.remove('invalid');
+    h.$('#ep-ev-cliente').checked = state.clientMode;
+    renderEvList(ctx);
+  }
+  function attachFile(ctx, file) {
+    if (file.size > LIMITS.uploadBytes) { toast('Arquivo maior que ' + Math.round(LIMITS.uploadBytes / 1048576) + ' MB. Suba no Drive e cole o link.', true); return; }
+    if (!file.size) { toast('Arquivo vazio.', true); return; }
+    if (ctx.draft.evidencias.length >= LIMITS.evidences) { toast('No máximo ' + LIMITS.evidences + ' evidências por caso.', true); return; }
+    var reader = new FileReader();
+    reader.onload = function () {
+      var b64 = String(reader.result || '').split(',')[1] || '';
+      api('apiAttachEvidence', ctx.execId, file.name, file.type || 'application/octet-stream', b64).then(function (ev) {
+        if (ctx.h.closed) return;
+        // no modo cliente o que se anexa é para mostrar ao cliente (senão sumiria da lista)
+        ctx.draft.evidencias.push({ label: ev.label, url: ev.url, cliente: ev.cliente === true || state.clientMode });
+        renderEvList(ctx);
+        toast('Arquivo anexado no Drive. Salve o caso para gravar a evidência.');
+      }).catch(fail);
+    };
+    reader.onerror = function () { toast('Não consegui ler o arquivo.', true); };
+    reader.readAsDataURL(file);
+  }
+  function buildExecInput(ctx) {
+    var d = ctx.draft;
+    var input = {
+      exec_id: ctx.execId, status: d.status, prioridade: d.prioridade, responsavel: d.responsavel.trim(), data_prevista: d.data_prevista,
+      criterios_ids: d.criterios_ids.slice(), escopo_cliente: d.escopo_cliente,
+      checklist: d.checklist.filter(function (c) { return !c.removido; }).map(function (c) { return { k: c.k, ok: c.ok, obs: String(c.obs || '').trim() }; }),
+      resultado_obtido: d.resultado_obtido, evidencias: d.evidencias.map(function (e) { return { label: e.label, url: e.url, cliente: e.cliente === true }; }),
+      ambiente: d.ambiente.trim(), executado_por: d.executado_por.trim(), testemunha: d.testemunha.trim(), observacoes: d.observacoes,
+      causa: d.causa, referencia: d.referencia.trim(),
+    };
+    var np = d.nova_pendencia;
+    if (d.status === 'blocked' && String(np.descricao || '').trim()) {
+      input.nova_pendencia = { descricao: np.descricao.trim(), responsavel_tipo: np.responsavel_tipo || 'cliente', responsavel_nome: String(np.responsavel_nome || '').trim(), prazo: np.prazo || '' };
+    }
+    return input;
+  }
+  /** Rótulo ou link de evidência digitado e ainda não "Adicionado". */
+  function pendingEvidence(ctx) {
+    var l = ctx.h && ctx.h.$('#ep-ev-label'), u = ctx.h && ctx.h.$('#ep-ev-url');
+    return !!((l && l.value.trim()) || (u && u.value.trim()));
+  }
+  function saveExec(ctx, expected) {
+    if (ctx.saving) return;
+    // evidência digitada e não adicionada: entra agora (link inválido ou só o rótulo interrompem o salvamento)
+    var evUrl = ctx.h.$('#ep-ev-url'), evLabel = ctx.h.$('#ep-ev-label');
+    if (evUrl && evUrl.value.trim()) {
+      addEvidence(ctx);
+      if (evUrl.value.trim()) return;
+    } else if (evLabel && evLabel.value.trim()) {
+      evUrl.classList.add('invalid');
+      evUrl.focus();
+      toast('A evidência "' + evLabel.value.trim() + '" está sem link: cole o link (http/https) ou apague o rótulo antes de salvar.', true);
+      return;
+    }
+    var input = buildExecInput(ctx);
+    input.expected_atualizado_em = expected !== undefined ? expected : ctx.item.atualizado_em;
+    ctx.saving = true;
+    ctx.h.busy(true);
+    api('apiSaveExecution', input).then(function (res) {
+      if (res.conflict) {
+        ctx.conflict = res;
+        renderConflict(ctx);
+        toast('Conflito: o caso mudou no servidor. Seu rascunho foi mantido.', true);
+        return;
+      }
+      ctx.orig = JSON.stringify(ctx.draft);
+      ctx.h.close();
+      setView(res.view);
+      var sug = res.saved.suggestion;
+      toast('Caso salvo: ' + execStatusLabel(res.saved.status) + '.' + (sug && sug !== res.saved.status ? ' (O checklist sugere ' + execStatusLabel(sug) + '.)' : ''));
+    }).catch(fail).then(function () {
+      ctx.saving = false;
+      if (!ctx.h.closed) ctx.h.busy(false);
+    });
+  }
+
+  // ============================================================ aba Plano
+  function renderPlan(tabChanged) {
+    var v = state.pov, P = state.plan, locked = v.locked;
+    var note = '';
+    if (locked) note = '<div class="banner">PoV ' + esc(v.pov_status_label.toLowerCase()) + ': reabra a PoV para mudar o plano.</div>';
+    else if (v.pov.plano_aceite_em && v.pov.plano_aceite_por) note = '<div class="banner info" id="scope-banner">O plano foi aceito pelo cliente em ' + esc(dateBr(v.pov.plano_aceite_em)) + ': incluir ou remover casos pede um motivo e fica registrado como mudança de escopo.</div>';
+    else if (v.pov.plano_aceite_em) note = '<div class="banner info" id="scope-banner">A execução começou em ' + esc(dateBr(v.pov.plano_aceite_em)) + ' sem aceite formal do plano: depois do início da execução, incluir ou remover casos pede um motivo e fica registrado como mudança de escopo.</div>';
+    $('plan-note').innerHTML = note;
+    var ind = $('plan-industry');
+    if (ind.getAttribute('data-for') !== String(state.catalog ? state.catalog.meta.library_export_date + state.catalog.cases.length : '')) {
+      ind.innerHTML = '<option value="">Todas as indústrias</option>' + (state.catalog ? state.catalog.industries : []).map(function (i) { return '<option value="' + esc(i) + '">' + esc(i) + '</option>'; }).join('');
+      ind.setAttribute('data-for', String(state.catalog ? state.catalog.meta.library_export_date + state.catalog.cases.length : ''));
+    }
+    ind.value = P.industry;
+    $('plan-q').value = P.q;
+    $('plan-lab').checked = P.lab;
+    $('plan-deprecated').checked = P.deprecated;
+    $('plan-hide-in').checked = P.hideIn;
+    $('plan-lab-wrap').classList.toggle('hidden', state.clientMode);
+    $('btn-custom-new').disabled = locked;
+    if (tabChanged || !$('tree').firstChild) renderTree();
+    planRefresh();
+    renderCustomList();
+  }
+  function planCompute() {
+    var P = state.plan, inPlan = {};
+    state.pov.in_plan.forEach(function (id) { inPlan[id] = true; });
+    var base = { q: P.q, industry: P.industry, onlyLabPass: P.lab && !state.clientMode, showDeprecated: P.deprecated };
+    var pool = state.catalog.cases.filter(function (c) { return caseMatchesFilters(c, base) && !(P.hideIn && inPlan[c.id]); });
+    var counts = {};
+    pool.forEach(function (c) {
+      var seen = {};
+      (c.node_ids || []).forEach(function (id) { (cat.anc[id] || [id]).forEach(function (a) { if (!seen[a]) { seen[a] = true; counts[a] = (counts[a] || 0) + 1; } }); });
+    });
+    var selIds = Object.keys(P.sel);
+    var visible = pool;
+    if (selIds.length) {
+      var covered = coveredNodeIds(selIds, cat.flat);
+      visible = pool.filter(function (c) { return caseMatchesFilters(c, { covered: covered, showDeprecated: true }); });
+    }
+    return { pool: pool, counts: counts, visible: visible, inPlan: inPlan };
+  }
+  function renderTree() {
+    var P = state.plan;
+    var el = $('tree');
+    var top = el.scrollTop;
+    function walk(nodes, depth) {
+      return nodes.map(function (n) {
+        var kids = n.children && n.children.length, open = !!P.open[n.node_id], on = !!P.sel[n.node_id];
+        var retired = n.status && n.status !== 'active';
+        return '<div class="tnode' + (open ? ' open' : '') + '" data-id="' + esc(n.node_id) + '" role="treeitem" aria-expanded="' + (kids ? open : 'false') + '">' +
+          '<div class="node d' + Math.min(depth, 3) + (on ? ' on' : '') + '" style="padding-left:' + (depth * 16 + 2) + 'px" title="' + esc((n.type_pt ? n.type_pt + ' · ' : '') + nodePath(n.node_id)) + '">' +
+          (kids ? '<button type="button" class="tw" aria-label="' + (open ? 'Recolher' : 'Expandir') + ' ' + esc(n.name) + '">' + (open ? '▾' : '▸') + '</button>' : '<span class="tw-sp"></span>') +
+          '<label><input type="checkbox" class="tsel"' + (on ? ' checked' : '') + '> <span class="nm">' + esc(n.name) + '</span>' + (retired ? ' <span class="faint small">(aposentado)</span>' : '') + '</label>' +
+          '<span class="count">0</span></div>' + (kids ? '<div class="kids" role="group">' + walk(n.children, depth + 1) + '</div>' : '') + '</div>';
+      }).join('');
+    }
+    el.innerHTML = state.catalog && state.catalog.tree.length ? walk(state.catalog.tree, 0) : '<div class="muted small">Taxonomia vazia.</div>';
+    el.scrollTop = top;
+  }
+  function planRefresh() {
+    if (!state.catalog) return;
+    var r = planCompute(), P = state.plan, locked = state.pov.locked, cm = state.clientMode;
+    qsa('#tree .tnode', $('tree')).forEach(function (t) {
+      var id = t.getAttribute('data-id');
+      var c = t.querySelector(':scope > .node .count');
+      if (c) c.textContent = r.counts[id] || 0;
+      t.querySelector(':scope > .node').classList.toggle('empty-node', !r.counts[id]);
+    });
+    var list = r.visible;
+    // mantém só marcações de casos visíveis e fora do plano
+    Object.keys(P.checked).forEach(function (id) { if (r.inPlan[id]) delete P.checked[id]; });
+    var html = list.map(function (c) {
+      var inP = !!r.inPlan[c.id], chk = !!P.checked[c.id];
+      var badges = (inP ? '<span class="badge in">no plano</span>' : '') +
+        (!cm && c.lifecycle_label ? '<span class="badge' + (c.lifecycle === 'deprecated' ? ' bad' : c.lifecycle === 'tested' ? ' ok' : '') + '">' + esc(c.lifecycle_label) + '</span>' : '') +
+        (!cm && c.tested ? '<span class="badge ' + (c.lab_pass ? 'ok' : '') + '">lab: ' + esc(c.test_result_label || 'testado') + '</span>' : '') +
+        (!cm && c.translation_pending ? '<span class="badge warn">tradução pendente</span>' : '');
+      var meta = [plural(c.n_prereqs, 'pré-requisito', 'pré-requisitos'), plural(c.n_steps, 'passo', 'passos'), (c.use_case || []).join(' · ')].filter(Boolean).join(' · ');
+      return '<div class="plan-item' + (inP ? ' in' : '') + (chk ? ' on' : '') + '" data-id="' + esc(c.id) + '">' +
+        '<input type="checkbox" class="psel" aria-label="Selecionar ' + esc(c.name) + '"' + (chk ? ' checked' : '') + (inP || locked ? ' disabled' : '') + '>' +
+        '<div class="pi-body"><div class="case-name">' + esc(c.name) + ' ' + badges + '</div>' +
+        (!cm && c.name_en && c.name_en !== c.name ? '<div class="case-en">' + esc(c.name_en) + '</div>' : '') +
+        (c.summary ? '<div class="case-summary">' + esc(cm ? redactText(c.summary).text : c.summary) + '</div>' : '') + '<div class="meta">' + esc(meta) + '</div></div></div>';
+    }).join('');
+    $('plan-list').innerHTML = html || '<div class="empty small">Nenhum caso com esses filtros' + (Object.keys(P.sel).length ? ' nos nós selecionados' : '') + '.</div>';
+    planSummary(r);
+  }
+  function planSummary(r) {
+    r = r || planCompute();
+    var n = Object.keys(state.plan.checked).length;
+    var inVis = r.visible.filter(function (c) { return r.inPlan[c.id]; }).length;
+    $('plan-summary').textContent = plural(r.visible.length, 'caso', 'casos') + (inVis ? ' (' + inVis + ' já no plano)' : '') + ' · ' + plural(n, 'marcado', 'marcados') +
+      (Object.keys(state.plan.sel).length ? ' · ' + plural(Object.keys(state.plan.sel).length, 'nó selecionado', 'nós selecionados') : '');
+    var b = $('btn-plan-add');
+    b.textContent = 'Incluir no plano (' + n + ')';
+    b.disabled = !n || state.pov.locked;
+  }
+  var planSearch = debounce(function () { planRefresh(); }, 200);
+  $('plan-q').addEventListener('input', function (e) { state.plan.q = e.target.value; planSearch(); });
+  $('plan-industry').addEventListener('change', function (e) { state.plan.industry = e.target.value; planRefresh(); });
+  $('plan-lab').addEventListener('change', function (e) { state.plan.lab = e.target.checked; planRefresh(); });
+  $('plan-deprecated').addEventListener('change', function (e) { state.plan.deprecated = e.target.checked; planRefresh(); });
+  $('plan-hide-in').addEventListener('change', function (e) { state.plan.hideIn = e.target.checked; planRefresh(); });
+  $('btn-tree-clear').addEventListener('click', function () {
+    state.plan.sel = {};
+    qsa('#tree .tsel').forEach(function (cb) { cb.checked = false; });
+    qsa('#tree .node.on').forEach(function (n) { n.classList.remove('on'); });
+    planRefresh();
+  });
+  $('tree').addEventListener('click', function (e) {
+    var tw = e.target.closest('.tw');
+    if (!tw) return;
+    var t = tw.closest('.tnode'), id = t.getAttribute('data-id');
+    var open = !state.plan.open[id];
+    if (open) state.plan.open[id] = true; else delete state.plan.open[id];
+    t.classList.toggle('open', open);
+    t.setAttribute('aria-expanded', open ? 'true' : 'false');
+    tw.textContent = open ? '▾' : '▸';
+    var nm = t.querySelector('.nm');
+    tw.setAttribute('aria-label', (open ? 'Recolher ' : 'Expandir ') + (nm ? nm.textContent : ''));
+  });
+  $('tree').addEventListener('change', function (e) {
+    if (!e.target.classList.contains('tsel')) return;
+    var t = e.target.closest('.tnode'), id = t.getAttribute('data-id');
+    if (e.target.checked) state.plan.sel[id] = true; else delete state.plan.sel[id];
+    t.querySelector(':scope > .node').classList.toggle('on', e.target.checked);
+    planRefresh();
+  });
+  $('plan-list').addEventListener('click', function (e) {
+    var item = e.target.closest('.plan-item');
+    if (!item || e.target.classList.contains('psel') || e.target.closest('a')) return;
+    var cb = item.querySelector('.psel');
+    if (cb.disabled) return;
+    cb.checked = !cb.checked;
+    cb.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  $('plan-list').addEventListener('change', function (e) {
+    if (!e.target.classList.contains('psel')) return;
+    var item = e.target.closest('.plan-item'), id = item.getAttribute('data-id');
+    if (e.target.checked) {
+      if (Object.keys(state.plan.checked).length >= LIMITS.planBatch) { e.target.checked = false; toast('No máximo ' + LIMITS.planBatch + ' casos por inclusão.', true); return; }
+      state.plan.checked[id] = true;
+    } else delete state.plan.checked[id];
+    item.classList.toggle('on', e.target.checked);
+    planSummary();
+  });
+  $('btn-plan-all').addEventListener('click', function () {
+    var r = planCompute(), n = 0, capped = false;
+    state.plan.checked = {};
+    r.visible.forEach(function (c) {
+      if (r.inPlan[c.id]) return;
+      if (n >= LIMITS.planBatch) { capped = true; return; }
+      state.plan.checked[c.id] = true;
+      n++;
+    });
+    planRefresh();
+    if (capped) toast('Marquei os primeiros ' + LIMITS.planBatch + ' casos (limite por inclusão). Refine os filtros para incluir o resto depois.');
+  });
+  $('btn-plan-none').addEventListener('click', function () { state.plan.checked = {}; planRefresh(); });
+  $('btn-plan-add').addEventListener('click', function () {
+    var ids = Object.keys(state.plan.checked);
+    if (!ids.length) return;
+    if (ids.length > LIMITS.planBatch) { toast('No máximo ' + LIMITS.planBatch + ' casos por inclusão. Refine a seleção.', true); return; }
+    var ask = afterBaseline()
+      ? askText('Incluir no plano', { sub: esc(scopeLead() + ' a inclusão de ' + plural(ids.length, 'caso', 'casos') + ' fica registrada como mudança de escopo.'), label: 'Motivo *', min: 3, multiline: true, ok: 'Incluir' })
+      : Promise.resolve('');
+    ask.then(function (motivo) {
+      if (motivo === null) return;
+      return api('apiAddToPlan', state.povId, ids, Object.keys(state.plan.sel), motivo).then(function (res) {
+        state.plan.checked = {};
+        var r = res.result, parts = [];
+        if (r.added) parts.push(plural(r.added, 'caso incluído', 'casos incluídos'));
+        if (r.reactivated) parts.push(plural(r.reactivated, 'reativado', 'reativados') + ' (com o que já tinha sido registrado)');
+        if (r.skipped) parts.push(plural(r.skipped, 'já estava', 'já estavam') + ' no plano');
+        if (r.unknown) parts.push(plural(r.unknown, 'não encontrado', 'não encontrados') + ' na biblioteca');
+        state.tab = 'exec';
+        state.tabByPov[state.povId] = 'exec';
+        setView(res.view);
+        renderTabs();
+        renderTab(true);
+        toast((parts.join(' · ') || 'Nada mudou') + '.');
+      });
+    }).catch(fail);
+  });
+
+  // ------------------------------------------------------------ casos definidos com o cliente
+  function renderCustomList() {
+    var v = state.pov, list = v.casos_proprios || [];
+    var inPlan = {};
+    v.in_plan.forEach(function (id) { inPlan[id] = true; });
+    $('custom-list').innerHTML = list.length ? list.map(function (c) {
+      var uc = c.use_case_id && cat.byId[c.use_case_id] ? cat.byId[c.use_case_id].name : 'sem use case';
+      var resumo = state.clientMode ? redactText(c.resumo).text : c.resumo;
+      return '<div class="custom-item"><div class="ci-body"><div class="case-name">' + esc(c.nome) + ' <span class="badge custom">definido com o cliente</span> <span class="faint small">v' + esc(c.versao) + '</span></div>' +
+        (resumo ? '<div class="case-summary">' + esc(resumo) + '</div>' : '') +
+        '<div class="meta">' + esc([uc, plural((c.objetivos || []).length, 'passo', 'passos'), plural((c.metricas || []).length, 'métrica', 'métricas'), inPlan[c.caso_id] ? 'no plano' : 'fora do plano'].join(' · ')) + '</div></div>' +
+        '<div class="ci-actions">' + (inPlan[c.caso_id] ? '' : '<button type="button" class="small" data-include-custom="' + esc(c.caso_id) + '"' + (v.locked ? ' disabled' : '') + '>Incluir no plano</button>') +
+        '<button type="button" class="small ghost" data-edit-custom="' + esc(c.caso_id) + '"' + (v.locked ? ' disabled' : '') + '>Editar</button></div></div>';
+    }).join('') : '<div class="muted small">Nenhum caso definido com o cliente nesta PoV.</div>';
+  }
+  $('custom-list').addEventListener('click', function (e) {
+    var inc = e.target.closest('[data-include-custom]');
+    if (inc) { includeCustom(inc.getAttribute('data-include-custom')); return; }
+    var b = e.target.closest('[data-edit-custom]');
+    if (!b) return;
+    var c = (state.pov.casos_proprios || []).filter(function (x) { return x.caso_id === b.getAttribute('data-edit-custom'); })[0];
+    if (c) openCustomForm(c);
+  });
+  /** Um caso definido com o cliente que saiu do plano volta (a mesma execução é reativada, com o que já foi registrado). */
+  function includeCustom(casoId) {
+    var c = (state.pov.casos_proprios || []).filter(function (x) { return x.caso_id === casoId; })[0];
+    if (!c || state.pov.locked) return;
+    var ask = afterBaseline()
+      ? askText('Incluir no plano', { sub: esc(scopeLead() + ' a inclusão de "' + c.nome + '" fica registrada como mudança de escopo.'), label: 'Motivo *', min: 3, multiline: true, ok: 'Incluir' })
+      : Promise.resolve('');
+    ask.then(function (motivo) {
+      if (motivo === null) return;
+      return api('apiAddToPlan', state.povId, [casoId], c.use_case_id ? [c.use_case_id] : [], motivo).then(function (res) {
+        setView(res.view);
+        var r = res.result;
+        toast(r.reactivated ? 'Caso reincluído no plano, com o que já tinha sido registrado.' : r.added ? 'Caso incluído no plano.' : r.skipped ? 'O caso já estava no plano.' : 'Nada mudou.');
+      });
+    }).catch(fail);
+  }
+  /** O plano tem linha de base (aceite formal ou início sem aceite)? Então mudar o escopo pede motivo. */
+  function afterBaseline() { return !!state.pov.pov.plano_aceite_em; }
+  /** Começo da frase sobre mudança de escopo, conforme houve aceite formal ou não. */
+  function scopeLead() {
+    return state.pov.pov.plano_aceite_por ? 'O plano já foi aceito pelo cliente:' : 'Depois do início da execução (sem aceite formal do plano),';
+  }
+  $('btn-custom-new').addEventListener('click', function () { openCustomForm(null); });
+  function openCustomForm(c) {
+    var edit = !!c, v = state.pov;
+    c = c || {};
+    var needMotivo = !edit && afterBaseline();
+    var body = fieldHtml('cc-nome', 'Nome *', inputHtml('cc-nome', c.nome, { max: LIMITS.short, placeholder: 'ex.: Envio dos logs do firewall para o SIEM do cliente' })) +
+      fieldHtml('cc-resumo', 'Resumo', textareaHtml('cc-resumo', c.resumo, { rows: 2, max: LIMITS.obs })) +
+      fieldHtml('cc-uc', 'Use case (agrupa o caso no plano e no relatório)', selectHtml('cc-uc', [['', 'Sem use case']].concat(cat.ucNodes.map(function (u) { return [u.id, u.label]; })), c.use_case_id || '')) +
+      fieldHtml('cc-passos', 'Passos (um por linha)', textareaHtml('cc-passos', (c.objetivos || []).join('\n'), { rows: 4, placeholder: 'Configurar…\nGerar…\nConferir…' }), 'Uma linha terminando em ":" vira subtítulo (não é avaliada).') +
+      fieldHtml('cc-esperado', 'Resultado esperado', textareaHtml('cc-esperado', c.resultado_esperado, { rows: 2, max: LIMITS.long })) +
+      fieldHtml('cc-metricas', 'Métricas (uma por linha)', textareaHtml('cc-metricas', (c.metricas || []).join('\n'), { rows: 2, placeholder: 'ex.: Latência até o SIEM (min)' })) +
+      fieldHtml('cc-como', 'Como testar', textareaHtml('cc-como', c.como_testar, { rows: 3, max: LIMITS.long })) +
+      (needMotivo ? fieldHtml('cc-motivo', 'Motivo da inclusão *', textareaHtml('cc-motivo', '', { rows: 2, max: LIMITS.medium }), esc(scopeLead() + ' a inclusão fica registrada como mudança de escopo.')) : '');
+    // edição: o token é o da abertura (só muda quando os campos são atualizados com a versão do servidor)
+    var token = c.atualizado_em || '', tracker = null;
+    var h0 = formModal({
+      title: edit ? 'Editar caso definido com o cliente' : 'Novo caso definido com o cliente', wide: false, cls: 'medium', id: 'custom-form',
+      sub: edit ? 'Mudar um texto avaliável cria uma nova versão; o checklist das execuções se ajusta.' : 'O caso entra no plano desta PoV ao ser criado e aparece marcado como "definido com o cliente".',
+      body: body, ok: edit ? 'Salvar' : 'Criar e incluir no plano',
+      onOk: function (h) {
+        var input = { nome: fv(h, 'cc-nome'), resumo: fv(h, 'cc-resumo'), use_case_id: h.$('#cc-uc').value, objetivos: lines(h.$('#cc-passos').value),
+          resultado_esperado: fv(h, 'cc-esperado'), metricas: lines(h.$('#cc-metricas').value), como_testar: fv(h, 'cc-como') };
+        if (input.nome.length < 3) return invalid(h, 'cc-nome', 'Dê um nome ao caso.');
+        if (!input.objetivos.length && !input.resultado_esperado) return invalid(h, 'cc-passos', 'Informe ao menos um passo ou o resultado esperado.');
+        if (edit) {
+          if (!tracker.changed().length) { h.markClean(); h.close(); toast('Nenhuma alteração.'); return; }
+          input.caso_id = c.caso_id;
+          input.expected_atualizado_em = token;
+        }
+        if (needMotivo) {
+          input.motivo = fv(h, 'cc-motivo');
+          if (input.motivo.length < 3) return invalid(h, 'cc-motivo', 'Informe o motivo da mudança de escopo.');
+        }
+        var onFresh = function (view) {
+          var row = (view.casos_proprios || []).filter(function (x) { return x.caso_id === c.caso_id; })[0];
+          if (!row || !tracker) return;
+          tracker.refresh(row);
+          token = row.atualizado_em || token;
+        };
+        return api('apiSaveCustomCase', state.povId, input).catch(conflictRefreshWith(edit ? onFresh : null)).then(function (view) {
+          h.markClean();
+          h.close();
+          if (!edit) { state.tab = 'exec'; state.tabByPov[state.povId] = 'exec'; }
+          setView(view);
+          if (!edit) { renderTabs(); renderTab(true); }
+          toast(edit ? 'Caso atualizado.' : 'Caso criado e incluído no plano.');
+        });
+      },
+    });
+    if (edit) {
+      tracker = fieldTracker(h0, [['cc-nome', 'nome'], ['cc-resumo', 'resumo'], ['cc-uc', 'use_case_id'], ['cc-passos', 'objetivos', 'lines'],
+        ['cc-esperado', 'resultado_esperado'], ['cc-metricas', 'metricas', 'lines'], ['cc-como', 'como_testar']]);
+    }
+  }
+
+  // ============================================================ aba Critérios
+  function verdictChip(code, label) { return '<span class="vd v-' + esc(code) + '">' + esc(label) + '</span>'; }
+  function renderCrit() {
+    var v = state.pov, cs = v.criterios, locked = v.locked;
+    var head = cs.obrigatorios
+      ? '<b>' + cs.obrigatorios_atendidos + ' de ' + cs.obrigatorios + '</b> critérios obrigatórios atendidos' + (cs.total > cs.obrigatorios ? ' <span class="muted">· ' + cs.atendidos + ' de ' + cs.total + ' no total</span>' : '')
+      : cs.total ? '<b>' + cs.atendidos + ' de ' + cs.total + '</b> critérios atendidos <span class="muted">(nenhum obrigatório)</span>' : 'Nenhum critério de sucesso definido ainda.';
+    var h = '<div class="crit-top"><div class="headline-box" id="crit-headline">' + head + '</div><button type="button" id="btn-crit-new" class="primary"' + (locked ? ' disabled' : '') + '>+ Novo critério</button></div>' +
+      '<p class="muted small">O veredito é automático, pelos casos vinculados (reprovado → não atendido; todos aprovados → atendido; algum não concluído → pendente; senão parcial); "não aplicável" não conta. ' +
+      'Vincule casos no painel de execução (seção "Critérios de sucesso") ou pela ação em lote na aba Execução. Dá para definir o veredito manualmente, com justificativa.</p>';
+    if (cs.sem_casos.length || cs.casos_sem_criterio.length) {
+      h += '<div class="warn-grid">' +
+        (cs.sem_casos.length ? '<div class="warn-box"><b>' + plural(cs.sem_casos.length, 'critério sem casos vinculados', 'critérios sem casos vinculados') + '</b><ul>' + cs.sem_casos.map(function (t) { return '<li>' + esc(t) + '</li>'; }).join('') + '</ul></div>' : '') +
+        (cs.casos_sem_criterio.length ? '<div class="warn-box"><b>' + plural(cs.casos_sem_criterio.length, 'caso do plano sem critério', 'casos do plano sem critério') + '</b><ul>' + cs.casos_sem_criterio.map(function (t) { return '<li>' + esc(t) + '</li>'; }).join('') + '</ul></div>' : '') +
+        '</div>';
+    }
+    if (cs.list.length) {
+      h += '<table class="crit-table"><thead><tr><th class="c-n">#</th><th>Critério</th><th class="c-peso">Peso</th><th class="c-vd">Veredito</th><th>Casos vinculados</th><th class="c-act"></th></tr></thead><tbody>' +
+        cs.list.map(function (c) {
+          return '<tr data-crit="' + esc(c.crit_id) + '"><td class="num"><b>C' + c.n + '</b></td><td class="pre">' + esc(c.texto) + '</td>' +
+            '<td><span class="badge ' + (c.peso === 'obrigatorio' ? 'req' : '') + '">' + esc(c.peso_label) + '</span></td>' +
+            '<td>' + verdictChip(c.veredito, c.veredito_label) + (c.manual
+              ? '<div class="vd-mode"><span class="badge manual">manual</span> <span class="faint small">automático seria: ' + esc(c.automatico_label) + '</span></div><div class="small muted">' + esc(c.justificativa) + '</div>'
+              : '<div class="vd-mode faint small">automático</div>') + '</td>' +
+            '<td class="small">' + (c.casos.length ? '<ul class="linked">' + c.casos.map(function (x) { return '<li><span class="st ' + esc(x.status) + '">' + esc(execStatusLabel(x.status)) + '</span> ' + esc(x.name) + '</li>'; }).join('') + '</ul>' : '<span class="faint">nenhum</span>') + '</td>' +
+            '<td class="c-act">' + (locked ? '' : '<button type="button" class="small ghost" data-act="edit">Editar</button><button type="button" class="small ghost" data-act="verdict">Veredito…</button><button type="button" class="small ghost danger-text" data-act="remove">Remover</button>') + '</td></tr>';
+        }).join('') + '</tbody></table>';
+    } else {
+      h += '<div class="empty">Combine com o cliente o que precisa ser comprovado (ex.: "bloquear malware desconhecido em até 5 minutos") e registre aqui.</div>';
+    }
+    $('crit-body').innerHTML = h;
+  }
+  $('crit-body').addEventListener('click', function (e) {
+    if (e.target.id === 'btn-crit-new') { openCritForm(null); return; }
+    var b = e.target.closest('button[data-act]');
+    if (!b) return;
+    var c = state.d.crit[b.closest('tr').getAttribute('data-crit')];
+    if (!c) return;
+    var act = b.getAttribute('data-act');
+    if (act === 'edit') openCritForm(c);
+    else if (act === 'verdict') openVerdictForm(c);
+    else if (act === 'remove') {
+      askConfirm('Remover o critério C' + c.n + '?', '<p>' + esc(c.texto) + '</p><p class="muted small">Os vínculos com os casos deixam de contar; o critério fica registrado no histórico.</p>', { ok: 'Remover', danger: true })
+        .then(function (ok) { if (ok) return api('apiRemoveCriterion', state.povId, c.crit_id).then(function (view) { setView(view); toast('Critério removido.'); }); }).catch(fail);
+    }
+  });
+  function openCritForm(c) {
+    var edit = !!c, tracker = null;
+    var h0 = formModal({
+      title: edit ? 'Editar critério C' + c.n : 'Novo critério de sucesso', cls: 'narrow', id: 'crit-form',
+      sub: 'O que o cliente combinou que precisa ver para considerar a PoV um sucesso.',
+      body: fieldHtml('cr-texto', 'Critério *', textareaHtml('cr-texto', c ? c.texto : '', { rows: 3, max: LIMITS.medium, placeholder: 'ex.: Bloquear malware desconhecido em até 5 minutos' })) +
+        fieldHtml('cr-peso', 'Peso', selectHtml('cr-peso', [['obrigatorio', weightLabel('obrigatorio')], ['desejavel', weightLabel('desejavel')]], c ? c.peso : 'obrigatorio')),
+      ok: edit ? 'Salvar' : 'Adicionar',
+      onOk: function (h) {
+        var input = { texto: fv(h, 'cr-texto'), peso: h.$('#cr-peso').value };
+        if (input.texto.length < 3) return invalid(h, 'cr-texto', 'Descreva o critério de sucesso.');
+        if (edit) {
+          // o texto sempre vai (o servidor exige); depois de um conflito ele já foi atualizado se o usuário não mexeu
+          var changed = tracker.changed();
+          if (!changed.length) { h.markClean(); h.close(); toast('Nenhuma alteração.'); return; }
+          if (changed.indexOf('peso') < 0) delete input.peso;
+          input.crit_id = c.crit_id;
+          input.expected_atualizado_em = (state.d.crit[c.crit_id] || c).atualizado_em;
+        }
+        var onFresh = function (view) { tracker && tracker.refresh(view.criterios.list.filter(function (x) { return x.crit_id === c.crit_id; })[0]); };
+        return api('apiSaveCriterion', state.povId, input).catch(conflictRefreshWith(edit ? onFresh : null))
+          .then(function (view) { h.markClean(); h.close(); setView(view); toast(edit ? 'Critério atualizado.' : 'Critério adicionado.'); });
+      },
+    });
+    if (edit) tracker = fieldTracker(h0, [['cr-texto', 'texto'], ['cr-peso', 'peso']]);
+  }
+  function openVerdictForm(c) {
+    var h = formModal({
+      title: 'Veredito do critério C' + c.n, cls: 'narrow', id: 'verdict-form',
+      sub: esc(c.texto) + '<br>Automático: ' + verdictChip(c.automatico, c.automatico_label),
+      body: fieldHtml('vd-sel', 'Veredito', selectHtml('vd-sel', [['', 'Automático (' + c.automatico_label + ')']].concat(CRITERION_VERDICTS.map(function (x) { return [x, verdictLabel(x)]; })), c.manual ? c.veredito : '')) +
+        fieldHtml('vd-just', 'Justificativa * (obrigatória no veredito manual)', textareaHtml('vd-just', c.justificativa, { rows: 3, max: LIMITS.medium, placeholder: 'por que o veredito difere do automático' })),
+      footerLeft: c.manual ? '<button type="button" class="ghost left" id="vd-auto">Voltar ao automático</button>' : '',
+      ok: 'Salvar veredito',
+      onOk: function (h) {
+        var ver = h.$('#vd-sel').value, just = fv(h, 'vd-just');
+        if (ver && just.length < 5) return invalid(h, 'vd-just', 'Explique por que o veredito foi definido manualmente.');
+        return api('apiSetVerdict', state.povId, c.crit_id, { veredito_manual: ver, justificativa: ver ? just : '' }).then(function (view) {
+          h.markClean(); h.close(); setView(view); toast(ver ? 'Veredito manual registrado.' : 'Critério voltou ao veredito automático.');
+        });
+      },
+    });
+    var auto = h.$('#vd-auto');
+    if (auto) auto.addEventListener('click', function () {
+      h.busy(true);
+      api('apiSetVerdict', state.povId, c.crit_id, { veredito_manual: '' }).then(function (view) { h.markClean(); h.close(); setView(view); toast('Critério voltou ao veredito automático.'); })
+        .catch(function (e) { h.busy(false); fail(e); });
+    });
+  }
+
+  // ============================================================ aba Pendências
+  function renderPend() {
+    var v = state.pov, list = v.pendencias, locked = v.locked;
+    var open = list.filter(function (p) { return p.status === 'aberta'; });
+    var late = open.filter(function (p) { return p.atrasada; }).length;
+    var h = '<div class="crit-top"><div class="headline-box" id="pend-headline"><b>' + open.length + '</b> ' + (open.length === 1 ? 'pendência aberta' : 'pendências abertas') + (late ? ' <span class="badge bad">' + late + ' atrasada' + (late > 1 ? 's' : '') + '</span>' : '') +
+      ' <span class="muted">· ' + (list.length - open.length) + ' resolvida' + (list.length - open.length === 1 ? '' : 's') + '</span></div>' +
+      '<button type="button" id="btn-pend-new" class="primary"' + (locked ? ' disabled' : '') + '>+ Nova pendência</button></div>' +
+      '<p class="muted small">O que falta para a PoV andar (licença, acesso, janela de mudança…), de quem e até quando. Um caso só fica "Bloqueado" com uma pendência aberta vinculada.</p>';
+    if (!list.length) h += '<div class="empty">Nenhuma pendência registrada.</div>';
+    else h += '<div class="pend-list">' + list.map(function (p) {
+      return '<div class="pend-item ' + (p.status === 'aberta' ? 'open' : 'done') + (p.atrasada ? ' late' : '') + '" data-pend="' + esc(p.pend_id) + '">' +
+        '<div class="pi-main"><div class="pi-top"><span class="st ' + (p.status === 'aberta' ? 'blocked' : 'pass') + '">' + (p.status === 'aberta' ? 'Aberta' : 'Resolvida') + '</span> <span class="pi-desc">' + esc(p.descricao) + '</span></div>' +
+        '<div class="m">' + esc(p.responsavel_label) + (p.responsavel_nome ? ' — ' + esc(p.responsavel_nome) : '') +
+        (p.prazo ? ' · prazo ' + esc(dateBr(p.prazo)) : ' · sem prazo') + (p.atrasada ? ' <span class="badge bad">atrasada</span>' : '') + '</div>' +
+        (p.casos.length ? '<div class="m">Casos afetados: ' + esc(p.casos.join('; ')) + '</div>' : '') +
+        (p.status !== 'aberta' ? '<div class="m">Resolvida em ' + esc(dt(p.resolvida_em)) + (p.resolucao ? ' — ' + esc(p.resolucao) : '') + '</div>' : '') +
+        '<div class="faint small">registrada em ' + esc(dt(p.criado_em)) + ' · última alteração por ' + esc(p.autor) + '</div></div>' +
+        '<div class="pi-actions">' + (locked ? '' : '<button type="button" class="small ghost" data-act="edit">Editar</button>' +
+          (p.status === 'aberta' ? '<button type="button" class="small" data-act="resolve">Resolver</button>' : '<button type="button" class="small ghost" data-act="reopen">Reabrir</button>')) + '</div></div>';
+    }).join('') + '</div>';
+    $('pend-body').innerHTML = h;
+  }
+  $('pend-body').addEventListener('click', function (e) {
+    if (e.target.id === 'btn-pend-new') { openPendForm(null); return; }
+    var b = e.target.closest('button[data-act]');
+    if (!b) return;
+    var id = b.closest('[data-pend]').getAttribute('data-pend');
+    var p = state.pov.pendencias.filter(function (x) { return x.pend_id === id; })[0];
+    if (!p) return;
+    var act = b.getAttribute('data-act');
+    if (act === 'edit') openPendForm(p);
+    else if (act === 'resolve') {
+      askText('Resolver a pendência', { sub: esc(p.descricao), label: 'Resolução (o que foi feito)', max: LIMITS.medium, multiline: true, ok: 'Marcar como resolvida', value: p.resolucao })
+        .then(function (res) {
+          if (res === null) return;
+          return api('apiSavePendencia', state.povId, { pend_id: p.pend_id, acao: 'resolver', resolucao: res, expected_atualizado_em: p.atualizado_em }).catch(conflictRefresh)
+            .then(function (view) { setView(view); toast('Pendência resolvida.' + (p.exec_ids.length ? ' Lembre de atualizar o status dos casos bloqueados.' : '')); });
+        }).catch(fail);
+    } else if (act === 'reopen') {
+      api('apiSavePendencia', state.povId, { pend_id: p.pend_id, acao: 'reabrir', expected_atualizado_em: p.atualizado_em }).catch(conflictRefresh)
+        .then(function (view) { setView(view); toast('Pendência reaberta.'); }).catch(fail);
+    }
+  });
+  function openPendForm(p) {
+    var edit = !!p;
+    p = p || { responsavel_tipo: 'cliente', exec_ids: [] };
+    var items = [];
+    state.pov.groups.forEach(function (g) { g.items.forEach(function (it) { items.push(it); }); });
+    // vínculos com execuções fora do plano continuam (marcados); desmarcar é que desfaz o vínculo
+    var aligned = (p.casos || []).length === (p.exec_ids || []).length;
+    var outside = (p.exec_ids || []).map(function (id, i) { return { id: id, name: aligned ? p.casos[i] : '' }; }).filter(function (x) { return !state.d.items[x.id]; });
+    var body = fieldHtml('pd-desc', 'O que falta *', textareaHtml('pd-desc', p.descricao, { rows: 2, max: LIMITS.medium, placeholder: 'ex.: Liberar a porta 443 no firewall do cliente' })) +
+      '<div class="row3">' + fieldHtml('pd-tipo', 'Responsável', selectHtml('pd-tipo', PENDING_OWNERS.map(function (o) { return [o, pendingOwnerLabel(o)]; }), p.responsavel_tipo)) +
+      fieldHtml('pd-nome', 'Nome', inputHtml('pd-nome', p.responsavel_nome, { max: LIMITS.short, placeholder: 'quem resolve' })) +
+      fieldHtml('pd-prazo', 'Prazo', inputHtml('pd-prazo', p.prazo, { type: 'date' })) + '</div>' +
+      '<div class="row"><label>Casos afetados</label><div class="check-list" id="pd-casos">' + (function () {
+        var rows = items.map(function (it) {
+          return '<label class="check"><input type="checkbox" value="' + esc(it.exec_id) + '"' + (has(p.exec_ids, it.exec_id) ? ' checked' : '') + '> #' + state.d.n[it.exec_id] + ' ' + esc(it.name) +
+            ' <span class="st ' + esc(it.status) + '">' + esc(it.status_label) + '</span></label>';
+        }).concat(outside.map(function (x) {
+          return '<label class="check"><input type="checkbox" value="' + esc(x.id) + '" checked> ' + esc(x.name || 'caso') + ' <span class="badge warn">fora do plano</span></label>';
+        }));
+        return rows.length ? rows.join('') : '<span class="muted small">O plano não tem casos.</span>';
+      })() + '</div></div>';
+    var tracker = null;
+    var h0 = formModal({
+      title: edit ? 'Editar pendência' : 'Nova pendência', cls: 'medium', id: 'pend-form', body: body, ok: edit ? 'Salvar' : 'Registrar pendência',
+      onOk: function (h) {
+        var input = { descricao: fv(h, 'pd-desc'), responsavel_tipo: h.$('#pd-tipo').value, responsavel_nome: fv(h, 'pd-nome'), prazo: fv(h, 'pd-prazo'),
+          exec_ids: qsa('#pd-casos input:checked', h.el).map(function (x) { return x.value; }) };
+        if (input.descricao.length < 3) return invalid(h, 'pd-desc', 'Descreva a pendência (o que falta).');
+        if (edit) {
+          // só o que mudou: um retry depois de conflito não desfaz o que outra pessoa gravou
+          var changed = tracker.changed();
+          if (!changed.length) { h.markClean(); h.close(); toast('Nenhuma alteração.'); return; }
+          var cur = state.pov.pendencias.filter(function (x) { return x.pend_id === p.pend_id; })[0] || p;
+          var partial = { pend_id: p.pend_id, expected_atualizado_em: cur.atualizado_em };
+          changed.forEach(function (k) { partial[k] = input[k]; });
+          input = partial;
+        }
+        var onFresh = function (view) { tracker && tracker.refresh(view.pendencias.filter(function (x) { return x.pend_id === p.pend_id; })[0]); };
+        return api('apiSavePendencia', state.povId, input).catch(conflictRefreshWith(edit ? onFresh : null))
+          .then(function (view) { h.markClean(); h.close(); setView(view); toast(edit ? 'Pendência atualizada.' : 'Pendência registrada.'); });
+      },
+    });
+    if (edit) tracker = fieldTracker(h0, [['pd-desc', 'descricao'], ['pd-tipo', 'responsavel_tipo'], ['pd-nome', 'responsavel_nome'], ['pd-prazo', 'prazo'], ['pd-casos', 'exec_ids', 'checks']]);
+  }
+
+  // ============================================================ aba Relatório
+  function repDetalhe() {
+    var R = state.rep;
+    if (R.tipo === 'status') return false;
+    if (R.detalhe !== null) return R.detalhe;
+    return !(R.tipo === 'plano' && R.publico === 'cliente');
+  }
+  function repOpts() {
+    var R = state.rep;
+    var o = { tipo: R.tipo, publico: state.clientMode ? 'cliente' : R.publico };
+    if (R.tipo !== 'status') o.detalhe = repDetalhe();
+    return o;
+  }
+  function renderRep(tabChanged) {
+    var R = state.rep, cm = state.clientMode;
+    if (cm) R.publico = 'cliente';
+    qsa('#rep-tipo button').forEach(function (b) { var on = b.getAttribute('data-v') === R.tipo; b.classList.toggle('on', on); b.setAttribute('aria-pressed', on ? 'true' : 'false'); });
+    qsa('#rep-publico button').forEach(function (b) {
+      var v = b.getAttribute('data-v');
+      b.classList.toggle('on', v === R.publico);
+      b.setAttribute('aria-pressed', v === R.publico ? 'true' : 'false');
+      b.disabled = cm && v === 'interno';
+      b.title = cm && v === 'interno' ? 'Desligue o modo cliente para gerar a versão interna' : '';
+    });
+    var det = $('rep-detalhe');
+    det.checked = repDetalhe();
+    det.disabled = R.tipo === 'status';
+    $('rep-publico-hint').textContent = R.publico === 'cliente'
+      ? 'Versão do cliente: sem laboratório, posicionamento, notas, observações internas e links internos; passa pela verificação de vazamento.'
+      : 'Versão interna: inclui laboratório, posicionamento oficial, observações internas e links do POV Companion. Não envie ao cliente.';
+    renderRepResult();
+    renderRepHistory();
+    if (tabChanged || !previewIsCurrent()) loadPreview();
+    else renderLeaks();
+  }
+  function repKey() { return JSON.stringify(repOpts()) + '|' + state.povId; }
+  /** A pré-visualização carregada é a das opções atuais (e, no modo cliente, a versão do cliente)? */
+  function previewIsCurrent() {
+    var P = state.rep.preview;
+    return !!P && P.key === repKey() && P.publico === repOpts().publico && (!state.clientMode || P.publico === 'cliente');
+  }
+  /** Tira da tela o documento anterior: nunca fica à mostra um documento de outra audiência/PoV enquanto o novo carrega. */
+  function clearPreview(msg) {
+    state.rep.preview = null;
+    $('preview').srcdoc = msg ? '<!DOCTYPE html><html><body style="font-family:Arial,sans-serif;color:#6b7280;padding:24px;font-size:13px">' + esc(msg) + '</body></html>' : '';
+    $('rep-leaks').innerHTML = '';
+  }
+  /** O documento abre links numa nova aba (o relatório já traz <base target="_blank">; garante para versões antigas). */
+  function withBaseTarget(html) {
+    return /<base\s/i.test(html) ? html : String(html).replace(/<head([^>]*)>/i, '<head$1><base target="_blank">');
+  }
+  function loadPreview() {
+    var R = state.rep, seq = ++R.seq, opts = repOpts(), key = JSON.stringify(opts) + '|' + state.povId;
+    clearPreview('Gerando a pré-visualização…');
+    return api('apiPreviewReport', state.povId, opts).then(function (r) {
+      if (seq !== R.seq) return;
+      if (state.clientMode && r.publico !== 'cliente') { clearPreview(); return; }
+      r.key = key;
+      R.preview = r;
+      $('preview').srcdoc = withBaseTarget(r.html);
+      renderLeaks();
+    }).catch(function (e) {
+      if (seq === R.seq) clearPreview('Não foi possível gerar a pré-visualização. Tente "Atualizar pré-visualização".');
+      fail(e);
+    });
+  }
+  function renderLeaks() {
+    var R = state.rep, el = $('rep-leaks');
+    if (R.publico !== 'cliente' || !R.preview || R.preview.publico !== 'cliente') { el.innerHTML = ''; return; }
+    var vz = R.preview.vazamentos || [];
+    el.innerHTML = vz.length
+      ? '<div class="leak-panel" id="leak-panel"><div class="lp-head"><b>Verificação de vazamento: ' + plural(vz.length, 'ponto para revisar', 'pontos para revisar') + '</b> antes de enviar ao cliente.</div>' +
+        leakTable(vz) +
+        '<p class="small muted nomargin">Procura nomes de concorrentes (da biblioteca e das Configurações), e-mails, links e palavras como "interno" nos textos livres. Links internos citados nos textos da biblioteca já saem como "' + esc(REDACTED) + '". ' +
+        'Corrija o texto na execução/critérios ou confirme ao salvar.</p></div>'
+      : '<div class="leak-ok" id="leak-panel">Verificação de vazamento: nada encontrado nesta versão do cliente.</div>';
+  }
+  function leakTable(vz) {
+    return '<table class="leaks"><thead><tr><th>Onde</th><th>Tipo</th><th>Trecho</th></tr></thead><tbody>' + vz.map(function (x) {
+      return '<tr><td>' + esc(x.onde) + '</td><td>' + esc(LEAK_TIPO[x.tipo] || x.tipo) + '</td><td class="mono">' + esc(x.trecho) + '</td></tr>';
+    }).join('') + '</tbody></table>';
+  }
+  /** Último documento salvo nesta PoV, se pode aparecer (no modo cliente, só a versão do cliente). */
+  function visibleLastSave() {
+    var s = state.rep.lastSave;
+    return s && s.pov === state.povId && (!state.clientMode || s.publico === 'cliente') ? s : null;
+  }
+  function renderRepResult() {
+    var s = visibleLastSave();
+    $('btn-rep-pdf').disabled = !(s && s.pdf_id);
+    if (!s) { $('rep-result').innerHTML = ''; return; }
+    // a pasta da PoV guarda também interno/: não aparece no modo cliente
+    $('rep-result').innerHTML = '<span class="muted small">Salvo: ' + esc(s.name) + '</span> ' +
+      (s.pdf_url ? link(s.pdf_url, 'PDF ↗') : '') + link(s.html_url, 'HTML ↗') + (s.folder_url && !state.clientMode ? link(s.folder_url, 'pasta ↗') : '') +
+      (s.pdf_error ? '<div class="small warn-text">' + esc(s.pdf_error) + '</div>' : '');
+  }
+  function renderRepHistory() {
+    var list = (state.pov.relatorios || []).filter(function (r) { return !state.clientMode || r.publico === 'cliente'; });
+    $('rep-history').innerHTML = list.length ? '<table class="hist"><thead><tr><th>Data</th><th>Documento</th><th>Audiência</th><th>Casos</th><th>Autor</th><th>Arquivos</th></tr></thead><tbody>' +
+      list.map(function (r) {
+        return '<tr><td class="num">' + esc(dt(r.criado_em)) + '</td><td>' + esc(TIPO_DOC[r.tipo] || r.tipo) + '</td><td>' + esc(PUBLICO[r.publico] || r.publico) + '</td><td class="num">' + esc(r.casos) + '</td><td class="small">' + esc(r.autor) + '</td>' +
+          '<td class="links">' + (r.pdf_url ? link(r.pdf_url, 'PDF ↗') : '') + (r.html_url ? link(r.html_url, 'HTML ↗') : '') +
+          (driveFileId(r.pdf_url) ? '<button type="button" class="small ghost" data-pdf="' + esc(driveFileId(r.pdf_url)) + '">baixar PDF</button>' : '') + '</td></tr>';
+      }).join('') + '</tbody></table>' : '<div class="muted small">Nenhum documento salvo no Drive ainda.</div>';
+  }
+  /** Id do arquivo numa URL do Drive (…/d/<id>/…) — o registro do documento guarda só a URL. */
+  function driveFileId(url) { var m = String(url || '').match(/\/d\/([-\w]{25,})/); return m ? m[1] : ''; }
+  function downloadPdf(pdfId) {
+    return api('apiPdfBase64', state.povId, pdfId).then(function (r) {
+      var bin = atob(r.base64), bytes = new Uint8Array(bin.length);
+      for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      downloadBlob(r.name, new Blob([bytes], { type: 'application/pdf' }));
+    }).catch(fail);
+  }
+  $('rep-history').addEventListener('click', function (e) {
+    var b = e.target.closest('button[data-pdf]');
+    if (b) downloadPdf(b.getAttribute('data-pdf'));
+  });
+  $('rep-tipo').addEventListener('click', function (e) {
+    var b = e.target.closest('button[data-v]');
+    if (!b) return;
+    state.rep.tipo = b.getAttribute('data-v');
+    renderRep(false);
+  });
+  $('rep-publico').addEventListener('click', function (e) {
+    var b = e.target.closest('button[data-v]');
+    if (!b || b.disabled) return;
+    state.rep.publico = b.getAttribute('data-v');
+    renderRep(false);
+  });
+  $('rep-detalhe').addEventListener('change', function (e) { state.rep.detalhe = e.target.checked; renderRep(false); });
+  $('btn-rep-preview').addEventListener('click', function () { loadPreview(); });
+  $('btn-rep-open').addEventListener('click', function () {
+    var R = state.rep;
+    if (!previewIsCurrent()) { toast('Aguarde a pré-visualização desta versão do documento.', true); return; }
+    var w = window.open('', '_blank');
+    if (!w) { toast('O navegador bloqueou a nova aba. Permita pop-ups para este site.', true); return; }
+    try { w.opener = null; } catch (e) { /* janela de outra origem */ }
+    w.document.open();
+    w.document.write(withBaseTarget(R.preview.html));
+    w.document.close();
+  });
+  $('btn-rep-save').addEventListener('click', function () { saveReport(false); });
+  function saveReport(confirmed) {
+    var btn = $('btn-rep-save');
+    var opts = repOpts();
+    if (confirmed) opts.confirmarVazamentos = true;
+    btn.disabled = true;
+    return api('apiSaveReport', state.povId, opts).then(function (r) {
+      if (r.needs_confirmation) {
+        return askConfirm('Salvar a versão do cliente mesmo assim?',
+          '<p>A verificação encontrou ' + plural(r.vazamentos.length, 'ponto', 'pontos') + ' que talvez não devam ir para o cliente:</p>' + leakTable(r.vazamentos) +
+          '<p class="small muted">Ao salvar, o documento fica no Drive com esses trechos. Você pode cancelar, corrigir e gerar de novo.</p>',
+          { ok: 'Salvar mesmo assim', cancel: 'Cancelar', id: 'leak-confirm', cls: 'medium' })
+          .then(function (ok) { btn.disabled = false; if (ok) return saveReport(true); });
+      }
+      state.rep.lastSave = Object.assign({ pov: state.povId, publico: opts.publico }, r);
+      renderRepResult();
+      toast(r.pdf_error ? r.pdf_error : 'Documento salvo no Drive.', !!r.pdf_error);
+      return api('apiGetPov', state.povId).then(setView);
+    }).catch(fail).then(function () { btn.disabled = false; });
+  }
+  function downloadBlob(name, blob) {
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(url); a.parentNode && a.parentNode.removeChild(a); }, 2000);
+  }
+  $('btn-rep-pdf').addEventListener('click', function () {
+    var s = visibleLastSave();
+    if (!s || !s.pdf_id) return;
+    downloadPdf(s.pdf_id);
+  });
+  $('btn-rep-csv').addEventListener('click', function () { exportCsv(false); });
+  function exportCsv(confirmed) {
+    var publico = state.clientMode ? 'cliente' : state.rep.publico;
+    var opts = { publico: publico };
+    if (confirmed) opts.confirmarVazamentos = true;
+    return api('apiExportCsv', state.povId, opts).then(function (r) {
+      if (r.needs_confirmation) {
+        return askConfirm('Baixar o CSV do cliente mesmo assim?',
+          '<p>A verificação encontrou ' + plural(r.vazamentos.length, 'ponto', 'pontos') + ' que talvez não devam ir para o cliente:</p>' + leakTable(r.vazamentos),
+          { ok: 'Baixar mesmo assim', cancel: 'Cancelar', id: 'leak-confirm-csv', cls: 'medium' })
+          .then(function (ok) { if (ok) return exportCsv(true); });
+      }
+      downloadBlob(r.name, new Blob([r.csv], { type: 'text/csv;charset=utf-8' }));
+      toast('CSV (' + PUBLICO[publico] + ') baixado.');
+    }).catch(fail);
+  }
+
+  // ============================================================ aba Histórico
+  function renderHist() {
+    var list = state.pov.historico || [];
+    $('hist-list').innerHTML = list.length ? '<table class="hist"><thead><tr><th>Data</th><th>Tipo</th><th>Caso</th><th>De → para</th><th>Nota</th><th>Autor</th></tr></thead><tbody>' +
+      list.map(function (h) {
+        var dp = h.de || h.para ? (h.de ? esc(h.de) + ' → ' : '') + '<b>' + esc(h.para) + '</b>' : '';
+        return '<tr><td class="num">' + esc(dt(h.em)) + '</td><td><span class="badge">' + esc(HIST_TIPO[h.tipo] || h.tipo) + '</span></td><td>' + esc(h.caso || '') + '</td><td>' + dp + '</td>' +
+          '<td class="small pre">' + esc(h.nota || '') + '</td><td class="small">' + esc(h.autor) + '</td></tr>';
+      }).join('') + '</tbody></table>' + (list.length >= 300 ? '<p class="faint small">Mostrando os 300 eventos mais recentes.</p>' : '') : '<div class="empty">Sem eventos.</div>';
+  }
+
+  // ============================================================ Administração
+  function openAdmin() {
+    show('admin');
+    $('admin-body').innerHTML = '<div class="empty">Carregando…</div>';
+    api('apiAdminInfo').then(function (info) { state.adminInfo = info; renderAdmin(); }).catch(function (e) { fail(e); $('admin-body').innerHTML = '<div class="empty">' + esc(e.message) + '</div>'; });
+  }
+  function renderAdmin() {
+    var info = state.adminInfo, admin = !!info.admin, I = state.imp;
+    var h = '<div class="grid-2">';
+    if (admin) {
+      h += '<div class="card" id="import-card"><h2>Importar biblioteca</h2>' +
+        fieldHtml('import-file', 'Id ou URL do arquivo no Drive', inputHtml('import-file', I.name ? '' : I.ref, { placeholder: 'https://drive.google.com/file/d/…/view' })) +
+        '<div class="or">ou</div>' +
+        '<div class="row"><label for="import-local">Arquivo do computador (vai para o Drive, em PoV Runner/importacoes; até 40 MB)</label><input type="file" id="import-local" accept=".json,application/json"></div>' +
+        (I.name ? '<div class="small muted">Arquivo enviado: <b>' + esc(I.name) + '</b></div>' : '') +
+        '<div class="toolbar"><button type="button" id="btn-dryrun">Analisar (dry-run)</button><button type="button" id="btn-import" class="primary"' + (I.dry ? '' : ' disabled') + '>Confirmar importação</button></div>' +
+        '<div id="dryrun" class="dry">' + dryHtml() + '</div></div>';
+    }
+    h += '<div class="card"><h2>Estado</h2><div id="admin-info" class="kv">' + adminInfoHtml(info) + '</div>';
+    if (admin) {
+      h += '<h2 class="mt">Biblioteca de demonstração</h2><p class="muted small">Casos sintéticos, com o mesmo formato do coletor, para experimentar o app. Só pode ser carregada com a biblioteca vazia (ou já em modo demonstração).</p>' +
+        '<div class="toolbar tight"><button type="button" id="btn-demo"' + (info.library_total !== '0' && !info.library_is_demo ? ' disabled title="A biblioteca real já foi importada"' : '') + '>Carregar demonstração</button></div>';
+    } else {
+      h += '<p class="muted small mt">Somente administradores importam a biblioteca e mudam as configurações. Fale com quem publicou o app.</p>';
+    }
+    h += '</div></div>';
+    if (admin && info.settings) {
+      h += state.clientMode
+        ? '<div class="banner mt" id="settings-hidden">Configurações ocultas no modo cliente (usuários, administradores e concorrentes). Desligue o modo cliente no topo para ver e editar.</div>'
+        : settingsHtml(info.settings);
+    }
+    $('admin-body').innerHTML = h;
+  }
+  function adminInfoHtml(info) {
+    var rows = [
+      ['Último import', info.last_import_at ? esc(dt(info.last_import_at)) + (info.last_import_by ? ' por ' + esc(info.last_import_by) : '') + (info.last_import_obs ? ' <span class="badge warn">' + esc(info.last_import_obs) + '</span>' : '') : 'nunca'],
+      ['Export da biblioteca', info.library_export_date ? esc(dt(info.library_export_date)) : '—'],
+      ['Tradução pt-BR', info.translation_date ? esc(dt(info.translation_date)) : 'sem tradução'],
+      ['Test cases', esc(info.library_total) + (info.library_is_demo ? ' <span class="badge">demonstração</span>' : '')],
+      ['Importação', info.import_incompleto ? '<span class="badge bad">incompleta — refaça a importação</span>' : 'ok'],
+      ['Versão do app', esc(info.app_version)],
+      ['Pasta no Drive', info.drive_folder_id ? link('https://drive.google.com/drive/folders/' + encodeURIComponent(info.drive_folder_id), 'abrir ↗') : 'criada no primeiro documento salvo'],
+      ['Você', esc(state.user) + (info.admin ? ' <span class="badge ok">administrador</span>' : '')],
+    ];
+    return rows.map(function (r) { return '<div class="k">' + r[0] + '</div><div>' + r[1] + '</div>'; }).join('');
+  }
+  function shortList(arr, max) {
+    arr = arr || [];
+    max = max || 12;
+    if (!arr.length) return '';
+    return '<div class="list">' + arr.slice(0, max).map(esc).join(' · ') + (arr.length > max ? ' · … e mais ' + (arr.length - max) : '') + '</div>';
+  }
+  function dryHtml() {
+    var I = state.imp, d = I.dry;
+    var h = '';
+    if (I.error) {
+      h += '<div class="notice bad">' + esc(I.error) + '</div>';
+      if (/parcial/i.test(I.error)) h += '<label class="check"><input type="checkbox" id="imp-partial"' + (I.allowPartial ? ' checked' : '') + '> Importar mesmo assim (export parcial)</label><div class="help">Marque e rode o dry-run de novo. Casos ausentes no arquivo não viram órfãos.</div>';
+    }
+    if (!d) return h;
+    function line(label, value, list, cls) { return '<div class="line' + (cls ? ' ' + cls : '') + '"><span>' + label + '</span><span class="v">' + value + '</span></div>' + (list || ''); }
+    var ref = d.referencias_detalhe || {};
+    var refTxt = Object.keys(ref).filter(function (k) { return ref[k]; }).map(function (k) { return k + ': ' + ref[k]; }).join(' · ');
+    h += '<div class="dry-head">Resultado do dry-run' + (d.is_demo ? ' <span class="badge">demonstração</span>' : '') + (d.parcial ? ' <span class="badge warn">export parcial</span>' : '') + '</div>' +
+      line('Export da biblioteca', esc(d.library_export_date ? dt(d.library_export_date) : '—')) +
+      line('Casos no arquivo / atuais', d.total_novo + ' / ' + d.total_atual) +
+      line('Novos', d.novos.length, shortList(d.novos)) +
+      line('Alterados', d.alterados.length, shortList(d.alterados)) +
+      line('Removidos', d.removidos.length, shortList(d.removidos), d.removidos.length ? 'warn' : '') +
+      line('Excluídos (não publicados ou privados)', d.excluidos.length, shortList(d.excluidos)) +
+      line('Execuções que ficarão órfãs', d.execucoes_orfas.length + (d.execucoes_orfas_em_pov_ativa ? ' <span class="badge bad">' + d.execucoes_orfas_em_pov_ativa + ' em PoVs em execução/concluídas</span>' : ''), shortList(d.execucoes_orfas), d.execucoes_orfas.length ? 'warn' : '') +
+      line('Execuções reabilitadas', d.execucoes_reabilitadas) +
+      line('Execuções com caso alterado', d.execucoes_caso_alterado.length, shortList(d.execucoes_caso_alterado)) +
+      line('Execuções com ciclo de vida alterado', d.execucoes_ciclo_alterado.length, shortList(d.execucoes_ciclo_alterado)) +
+      line('Referências não resolvidas', d.referencias_nao_resolvidas, refTxt ? '<div class="list">' + esc(refTxt) + '</div>' : '') +
+      line('Casos com tradução pendente', d.traducao_pendente) +
+      line('Traduções preservadas / perdidas', d.traducoes_preservadas + ' / ' + d.traducoes_perdidas) +
+      line('Export parcial', d.parcial ? 'sim' : 'não');
+    if (d.avisos && d.avisos.length) h += '<div class="notice warn"><b>Avisos</b><ul>' + d.avisos.map(function (a) { return '<li>' + esc(a) + '</li>'; }).join('') + '</ul></div>';
+    if (d.parcial) h += '<label class="check"><input type="checkbox" id="imp-partial"' + (I.allowPartial ? ' checked' : '') + '> Importar mesmo assim (export parcial)</label>';
+    if (d.execucoes_orfas_em_pov_ativa > 0) h += '<label class="check"><input type="checkbox" id="imp-orphans"' + (I.confirmOrphans ? ' checked' : '') + '> Confirmo as execuções órfãs (' + d.execucoes_orfas_em_pov_ativa + ' em PoVs em execução ou concluídas)</label>';
+    return h;
+  }
+  function settingsHtml(s) {
+    return '<div class="card mt" id="settings-card"><h2>Configurações</h2><div class="grid-2 tight">' +
+      '<div>' + fieldHtml('set-usuarios', 'Usuários autorizados', textareaHtml('set-usuarios', s.usuarios, { rows: 3, max: 5000, placeholder: '@empresa.com, pessoa@parceiro.com' }),
+        'E-mails e/ou domínios (@empresa.com), separados por vírgula ou linha. Vazio = qualquer pessoa com acesso ao web app (o domínio).') +
+      fieldHtml('set-admins', 'Administradores', textareaHtml('set-admins', s.admins, { rows: 2, max: 5000, placeholder: 'e-mails' }), 'Quem publicou o app é sempre administrador.') + '</div>' +
+      '<div>' + fieldHtml('set-vis', 'Visibilidade das PoVs', selectHtml('set-vis', [['equipe', 'Equipe da PoV'], ['todos', 'Todos os usuários autorizados']], s.visibilidade),
+        '<b>Equipe</b>: cada PoV aparece só para quem a criou, o responsável, os e-mails do campo Equipe e os administradores. <b>Todos</b>: qualquer usuário autorizado vê e edita todas as PoVs.') +
+      fieldHtml('set-pasta', 'Pasta do Drive', inputHtml('set-pasta', s.drive_folder_id, { placeholder: 'id ou URL da pasta' }),
+        'Onde ficam documentos e evidências. Recomendado: uma pasta num <b>Drive compartilhado</b> da equipe, para os arquivos não dependerem de uma conta pessoal. A conta que publicou o app precisa ter acesso.') +
+      fieldHtml('set-conc', 'Concorrentes extras (verificação de vazamento)', textareaHtml('set-conc', s.concorrentes_extra, { rows: 2, max: 2000, placeholder: 'nomes separados por vírgula ou linha' }),
+        'Além dos concorrentes da biblioteca, nomes que não podem aparecer nos documentos do cliente.') + '</div></div>' +
+      '<div class="toolbar"><button type="button" id="btn-settings-save" class="primary">Salvar configurações</button></div></div>';
+  }
+  function importRef() { var el = $('import-file'); var v = el ? el.value.trim() : ''; return v || state.imp.ref; }
+  function runDryRun() {
+    var I = state.imp;
+    var ref = importRef();
+    if (!ref) { toast('Informe o id/URL do arquivo no Drive ou escolha um arquivo do computador.', true); return Promise.resolve(); }
+    I.ref = ref;
+    I.dry = null;
+    I.error = '';
+    return api('apiImportDryRun', ref, { allowPartial: I.allowPartial }).then(function (d) {
+      I.dry = d;
+      renderAdmin();
+    }).catch(function (e) { I.error = e.message; renderAdmin(); fail(e); });
+  }
+  $('admin-body').addEventListener('click', function (e) {
+    var id = e.target.id;
+    if (id === 'btn-dryrun') { state.imp.name = ''; state.imp.confirmOrphans = false; runDryRun(); }
+    else if (id === 'btn-import') confirmImport();
+    else if (id === 'btn-demo') {
+      askConfirm('Carregar a biblioteca de demonstração?', 'Os casos sintéticos substituem a biblioteca de demonstração atual (se houver). PoVs e execuções são preservadas.', { ok: 'Carregar' })
+        .then(function (ok) {
+          if (!ok) return;
+          return api('apiLoadDemo').then(function (d) {
+            toast('Biblioteca de demonstração carregada: ' + d.total_novo + ' casos sintéticos.');
+            return reloadBootstrap().then(function () { return api('apiAdminInfo'); }).then(function (info) { state.adminInfo = info; renderAdmin(); });
+          });
+        }).catch(fail);
+    } else if (id === 'btn-settings-save') saveSettings();
+  });
+  $('admin-body').addEventListener('change', function (e) {
+    var t = e.target;
+    if (t.id === 'imp-partial') { state.imp.allowPartial = t.checked; if (state.imp.error) runDryRun(); }
+    else if (t.id === 'imp-orphans') state.imp.confirmOrphans = t.checked;
+    else if (t.id === 'import-local' && t.files && t.files[0]) uploadLocal(t.files[0]);
+  });
+  function uploadLocal(file) {
+    if (file.size > 40 * 1024 * 1024) { toast('Arquivo maior que 40 MB. Suba no Drive e informe o link.', true); return; }
+    var reader = new FileReader();
+    reader.onload = function () {
+      api('apiUploadBundle', file.name, String(reader.result || '')).then(function (r) {
+        state.imp.ref = r.file_id;
+        state.imp.name = r.name;
+        state.imp.dry = null;
+        state.imp.error = '';
+        renderAdmin();
+        toast('Arquivo guardado no Drive. Analisando…');
+        return runDryRunRef(r.file_id);
+      }).catch(fail);
+    };
+    reader.onerror = function () { toast('Não consegui ler o arquivo.', true); };
+    reader.readAsText(file, 'UTF-8');
+  }
+  function runDryRunRef(ref) {
+    var I = state.imp;
+    return api('apiImportDryRun', ref, { allowPartial: I.allowPartial }).then(function (d) { I.dry = d; I.error = ''; renderAdmin(); })
+      .catch(function (e) { I.error = e.message; renderAdmin(); fail(e); });
+  }
+  function confirmImport() {
+    var I = state.imp, d = I.dry;
+    if (!d) return;
+    if (d.parcial && !I.allowPartial) { toast('O arquivo é um export parcial: marque "Importar mesmo assim" para seguir.', true); return; }
+    if (d.execucoes_orfas_em_pov_ativa > 0 && !I.confirmOrphans) { toast('Confirme as execuções órfãs antes de importar.', true); return; }
+    askConfirm('Confirmar a importação?', '<p>Library, Taxonomia e Ambientes serão reescritas com ' + d.total_novo + ' casos (' + d.novos.length + ' novos, ' + d.alterados.length + ' alterados, ' + d.removidos.length + ' removidos). ' +
+      'PoVs, execuções, critérios, pendências, histórico e documentos são preservados.</p>', { ok: 'Importar' })
+      .then(function (ok) {
+        if (!ok) return;
+        $('btn-import').disabled = true;
+        return api('apiImportConfirm', I.ref, { allowPartial: I.allowPartial, confirmOrphans: I.confirmOrphans }).then(function (r) {
+          toast('Importado: ' + r.total_novo + ' casos (' + r.novos.length + ' novos, ' + r.alterados.length + ' alterados, ' + r.removidos.length + ' removidos).');
+          state.imp = { ref: '', name: '', dry: null, error: '', allowPartial: false, confirmOrphans: false };
+          return reloadBootstrap().then(function () { return api('apiAdminInfo'); }).then(function (info) { state.adminInfo = info; renderAdmin(); });
+        });
+      }).catch(function (e) { fail(e); var b = $('btn-import'); if (b) b.disabled = false; });
+  }
+  function saveSettings() {
+    var s = { usuarios: $('set-usuarios').value.trim(), admins: $('set-admins').value.trim(), visibilidade: $('set-vis').value,
+      drive_folder_id: $('set-pasta').value.trim(), concorrentes_extra: $('set-conc').value.trim() };
+    var btn = $('btn-settings-save');
+    btn.disabled = true;
+    api('apiSaveSettings', s).then(function (info) {
+      state.adminInfo = info;
+      state.visibilidade = info.settings ? info.settings.visibilidade : state.visibilidade;
+      renderAdmin();
+      toast('Configurações salvas.');
+    }).catch(function (e) { fail(e); btn.disabled = false; });
+  }
+
+  boot();
+})();
+</script>

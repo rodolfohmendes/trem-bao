@@ -1,0 +1,17 @@
+{
+  "name": "pov-runner",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PoV Runner — app interno (Apps Script + Sheets) para planejar, executar e reportar PoVs com os test cases da Test Case Library do POV Companion",
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "demo:bundle": "node tools/make_demo_bundle.js",
+    "dev:build": "node tools/build_dev_page.js",
+    "dev:ui": "node tools/build_dev_page.js && node tests/ui.smoke.js",
+    "push": "clasp push",
+    "deploy": "clasp deploy --description \"PoV Runner\""
+  },
+  "devDependencies": {
+    "playwright": "^1.47.0"
+  }
+}

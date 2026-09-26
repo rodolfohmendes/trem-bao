@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<base target="_blank">
+<title>Plano de testes — Banco &lt;Exemplo&gt;</title>
+<style>
+  /* CSS simples de propósito: o conversor HTML→PDF do Apps Script ignora @page, grid, flex e variáveis,
+     não carrega fontes externas e pode descartar fundos. Status sai em texto (o símbolo é só enfeite),
+     cores em bordas, tabelas com largura fixa e links quebráveis. Tema claro: imprime bem e vai para o cliente. */
+  html, body { margin: 0; padding: 0; background: #ffffff; }
+  body { font-family: Arial, Helvetica, 'DejaVu Sans', sans-serif; color: #1f2937; font-size: 11px; line-height: 1.45; }
+  .page { padding: 24px 28px; }
+  .bar { border-top: 4px solid #fa582d; margin-bottom: 12px; }
+  .brand { font-size: 9px; letter-spacing: 1.5px; text-transform: uppercase; color: #6b7280; }
+  h1 { font-size: 20px; margin: 4px 0 2px; color: #111827; }
+  h1 .sub { color: #c2410c; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 1.2px; color: #374151; margin: 20px 0 8px; border-bottom: 2px solid #e5e7eb; padding-bottom: 4px; page-break-after: avoid; }
+  h3 { font-size: 12.5px; margin: 0 0 3px; color: #111827; }
+  .meta { color: #4b5563; margin: 2px 0; }
+  .meta b { color: #111827; }
+  table { width: 100%; border-collapse: collapse; margin: 6px 0 10px; table-layout: fixed; }
+  th { text-align: left; font-size: 9px; text-transform: uppercase; letter-spacing: .6px; color: #4b5563; padding: 5px 6px; border-bottom: 1px solid #9ca3af; }
+  td { padding: 5px 6px; border-bottom: 1px solid #e5e7eb; vertical-align: top; word-wrap: break-word; overflow-wrap: break-word; }
+  tr { page-break-inside: avoid; }
+  .num { text-align: right; }
+  .stat { display: inline-block; border: 1px solid #d1d5db; border-radius: 6px; padding: 6px 10px; margin: 0 6px 6px 0; min-width: 84px; vertical-align: top; }
+  .stat .v { font-size: 16px; font-weight: bold; color: #111827; }
+  .stat .l { font-size: 8.5px; color: #6b7280; text-transform: uppercase; letter-spacing: .6px; }
+  .headline { border: 2px solid #111827; border-radius: 6px; padding: 8px 12px; margin: 8px 0; font-size: 13px; }
+  .headline b { font-size: 15px; }
+  .box { border: 1px solid #e5e7eb; border-radius: 6px; padding: 8px 11px; margin: 6px 0; page-break-inside: avoid; }
+  .case { border: 1px solid #d1d5db; border-left: 4px solid #9ca3af; border-radius: 4px; padding: 9px 11px; margin: 10px 0; page-break-inside: avoid; }
+  .case.pass { border-left-color: #16a34a; } .case.partial { border-left-color: #d97706; } .case.fail { border-left-color: #dc2626; }
+  .case.blocked { border-left-color: #7c3aed; } .case.in_progress { border-left-color: #0284c7; }
+  .st { display: inline-block; padding: 0 6px; border-radius: 8px; font-size: 9.5px; font-weight: bold; border: 1px solid #9ca3af; color: #374151; white-space: nowrap; }
+  .st.pass { color: #15803d; border-color: #16a34a; }
+  .st.partial { color: #b45309; border-color: #d97706; }
+  .st.fail { color: #b91c1c; border-color: #dc2626; }
+  .st.blocked { color: #6d28d9; border-color: #7c3aed; }
+  .st.in_progress { color: #0369a1; border-color: #0284c7; }
+  .v-met { color: #15803d; } .v-partial { color: #b45309; } .v-not_met { color: #b91c1c; }
+  .v-pending, .v-no_cases { color: #6b7280; }
+  .k { font-size: 8.5px; text-transform: uppercase; letter-spacing: .6px; color: #6b7280; font-weight: bold; margin-top: 6px; }
+  ul.cl { list-style: none; padding: 0; margin: 2px 0 0; }
+  ul.cl li { padding: 1px 0; }
+  ul.cl li.h { font-weight: bold; margin-top: 3px; }
+  .m { font-weight: bold; font-size: 9.5px; }
+  .m.ok { color: #15803d; } .m.nok { color: #b91c1c; } .m.na, .m.pend { color: #6b7280; }
+  .obs { color: #4b5563; font-style: italic; }
+  .en { font-size: 9.5px; color: #6b7280; }
+  .flag { font-size: 9px; color: #b45309; }
+  .muted { color: #6b7280; }
+  .small { font-size: 9.5px; }
+  .pre { white-space: pre-wrap; }
+  .url { word-break: break-all; }
+  .tag { font-size: 8.5px; letter-spacing: .6px; text-transform: uppercase; color: #9a3412; }
+  a { color: #0369a1; text-decoration: none; }
+  .foot { margin-top: 22px; padding-top: 8px; border-top: 1px solid #e5e7eb; color: #6b7280; font-size: 9px; }
+  .sign td { height: 30px; border-bottom: 1px solid #6b7280; }
+</style>
+</head>
+<body>
+<div class="page">
+  
+  <div class="bar"></div>
+  <div class="brand">Preparado para Banco &lt;Exemplo&gt; · Palo Alto Networks · Confidencial</div>
+  <h1>Plano de testes <span class="sub">· Banco &lt;Exemplo&gt;</span></h1>
+  <div class="meta"><b>PoV:</b> PoV NGFW</div>
+  <div class="meta"><b>Status:</b> Em execução</div>
+  <div class="meta"><b>Responsável:</b> sc@example.com &nbsp;·&nbsp; <b>Equipe:</b> ana@example.com</div>
+  <div class="meta"><b>Plano aceito em</b> 26/09/2026 por Maria &lt;b&gt;(CISO)&lt;/b&gt;</div>
+  
+  <div class="meta"><b>Gerado em:</b> 27/09/2026 06:30 por sc@example.com</div>
+
+  
+  <h2>Objetivo da PoV</h2>
+  <div class="box pre">Provar prevenção</div>
+  
+
+  
+
+  
+  <h2>Critérios de sucesso</h2>
+  
+  <table>
+    <tr><th style="width:6%">#</th><th>Critério</th><th style="width:12%">Peso</th><th style="width:32%">Casos vinculados</th></tr>
+    
+    <tr>
+      <td>C1</td>
+      <td class="pre">Detectar bucket público</td>
+      <td>Obrigatório</td>
+      
+      <td class="small">CSPM: detectar bucket de armazenamento público</td>
+    </tr>
+    
+  </table>
+  
+  
+
+  <h2>Escopo</h2>
+  <div>
+    <div class="stat"><div class="v">4</div><div class="l">casos</div></div>
+    <div class="stat"><div class="v">3</div><div class="l">use cases</div></div>
+    
+  </div>
+  <table>
+    
+    <tr><th>Use case</th><th class="num" style="width:12%">Casos</th><th class="num" style="width:16%">Prioridade alta</th><th class="num" style="width:12%">Média</th><th class="num" style="width:12%">Baixa</th></tr>
+    
+    <tr><td>Postura de segurança em nuvem</td><td class="num">1</td><td class="num">0</td><td class="num">1</td><td class="num">0</td></tr>
+    
+    <tr><td>Acesso remoto seguro</td><td class="num">1</td><td class="num">0</td><td class="num">1</td><td class="num">0</td></tr>
+    
+    <tr><td>Automação de resposta a incidentes</td><td class="num">2</td><td class="num">0</td><td class="num">2</td><td class="num">0</td></tr>
+    
+    
+  </table>
+
+  
+
+  
+
+  <h2>Casos de teste</h2>
+  
+  <table>
+    <tr><th style="width:5%">#</th><th>Caso</th><th style="width:18%">Use case</th>
+      <th style="width:9%">Prior.</th><th style="width:15%">Responsável</th><th style="width:10%">Data</th><th style="width:9%">Critérios</th>
+      </tr>
+    
+    <tr>
+      <td>1</td>
+      <td>CSPM: detectar bucket de armazenamento público</td>
+      <td class="muted">Postura de segurança em nuvem</td>
+      
+      <td>Média</td><td>—</td><td>—</td><td>C1</td>
+      
+    </tr>
+    
+    <tr>
+      <td>2</td>
+      <td>ZTNA para aplicação privada</td>
+      <td class="muted">Acesso remoto seguro</td>
+      
+      <td>Média</td><td>—</td><td>—</td><td>—</td>
+      
+    </tr>
+    
+    <tr>
+      <td>3</td>
+      <td>Playbook de contenção automatizada</td>
+      <td class="muted">Automação de resposta a incidentes</td>
+      
+      <td>Média</td><td>—</td><td>—</td><td>—</td>
+      
+    </tr>
+    
+    <tr>
+      <td>4</td>
+      <td>Cortex XDR: isolate a compromised endpoint</td>
+      <td class="muted">Automação de resposta a incidentes</td>
+      
+      <td>Média</td><td>—</td><td>—</td><td>—</td>
+      
+    </tr>
+    
+  </table>
+  
+
+  
+
+  
+
+  
+
+  
+
+  <div class="foot">
+    Casos de teste da biblioteca de provas de valor da Palo Alto Networks e casos definidos com Banco &lt;Exemplo&gt;.
+    Gerado por sc@example.com em 27/09/2026 06:30 com o PoV Runner. Preparado para Banco &lt;Exemplo&gt; · Palo Alto Networks · Confidencial.
+  </div>
+</div>
+</body>
+</html>

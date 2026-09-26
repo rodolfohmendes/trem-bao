@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<base target="_blank">
+<title><?= model.titulo ?> — <?= model.pov.cliente ?></title>
+<style>
+  /* CSS simples de propósito: o conversor HTML→PDF do Apps Script ignora @page, grid, flex e variáveis,
+     não carrega fontes externas e pode descartar fundos. Status sai em texto (o símbolo é só enfeite),
+     cores em bordas, tabelas com largura fixa e links quebráveis. Tema claro: imprime bem e vai para o cliente. */
+  html, body { margin: 0; padding: 0; background: #ffffff; }
+  body { font-family: Arial, Helvetica, 'DejaVu Sans', sans-serif; color: #1f2937; font-size: 11px; line-height: 1.45; }
+  .page { padding: 24px 28px; }
+  .bar { border-top: 4px solid #fa582d; margin-bottom: 12px; }
+  .brand { font-size: 9px; letter-spacing: 1.5px; text-transform: uppercase; color: #6b7280; }
+  h1 { font-size: 20px; margin: 4px 0 2px; color: #111827; }
+  h1 .sub { color: #c2410c; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 1.2px; color: #374151; margin: 20px 0 8px; border-bottom: 2px solid #e5e7eb; padding-bottom: 4px; page-break-after: avoid; }
+  h3 { font-size: 12.5px; margin: 0 0 3px; color: #111827; }
+  .meta { color: #4b5563; margin: 2px 0; }
+  .meta b { color: #111827; }
+  table { width: 100%; border-collapse: collapse; margin: 6px 0 10px; table-layout: fixed; }
+  th { text-align: left; font-size: 9px; text-transform: uppercase; letter-spacing: .6px; color: #4b5563; padding: 5px 6px; border-bottom: 1px solid #9ca3af; }
+  td { padding: 5px 6px; border-bottom: 1px solid #e5e7eb; vertical-align: top; word-wrap: break-word; overflow-wrap: break-word; }
+  tr { page-break-inside: avoid; }
+  .num { text-align: right; }
+  .stat { display: inline-block; border: 1px solid #d1d5db; border-radius: 6px; padding: 6px 10px; margin: 0 6px 6px 0; min-width: 84px; vertical-align: top; }
+  .stat .v { font-size: 16px; font-weight: bold; color: #111827; }
+  .stat .l { font-size: 8.5px; color: #6b7280; text-transform: uppercase; letter-spacing: .6px; }
+  .headline { border: 2px solid #111827; border-radius: 6px; padding: 8px 12px; margin: 8px 0; font-size: 13px; }
+  .headline b { font-size: 15px; }
+  .box { border: 1px solid #e5e7eb; border-radius: 6px; padding: 8px 11px; margin: 6px 0; page-break-inside: avoid; }
+  .case { border: 1px solid #d1d5db; border-left: 4px solid #9ca3af; border-radius: 4px; padding: 9px 11px; margin: 10px 0; page-break-inside: avoid; }
+  .case.pass { border-left-color: #16a34a; } .case.partial { border-left-color: #d97706; } .case.fail { border-left-color: #dc2626; }
+  .case.blocked { border-left-color: #7c3aed; } .case.in_progress { border-left-color: #0284c7; }
+  .st { display: inline-block; padding: 0 6px; border-radius: 8px; font-size: 9.5px; font-weight: bold; border: 1px solid #9ca3af; color: #374151; white-space: nowrap; }
+  .st.pass { color: #15803d; border-color: #16a34a; }
+  .st.partial { color: #b45309; border-color: #d97706; }
+  .st.fail { color: #b91c1c; border-color: #dc2626; }
+  .st.blocked { color: #6d28d9; border-color: #7c3aed; }
+  .st.in_progress { color: #0369a1; border-color: #0284c7; }
+  .v-met { color: #15803d; } .v-partial { color: #b45309; } .v-not_met { color: #b91c1c; }
+  .v-pending, .v-no_cases { color: #6b7280; }
+  .k { font-size: 8.5px; text-transform: uppercase; letter-spacing: .6px; color: #6b7280; font-weight: bold; margin-top: 6px; }
+  ul.cl { list-style: none; padding: 0; margin: 2px 0 0; }
+  ul.cl li { padding: 1px 0; }
+  ul.cl li.h { font-weight: bold; margin-top: 3px; }
+  .m { font-weight: bold; font-size: 9.5px; }
+  .m.ok { color: #15803d; } .m.nok { color: #b91c1c; } .m.na, .m.pend { color: #6b7280; }
+  .obs { color: #4b5563; font-style: italic; }
+  .en { font-size: 9.5px; color: #6b7280; }
+  .flag { font-size: 9px; color: #b45309; }
+  .muted { color: #6b7280; }
+  .small { font-size: 9.5px; }
+  .pre { white-space: pre-wrap; }
+  .url { word-break: break-all; }
+  .tag { font-size: 8.5px; letter-spacing: .6px; text-transform: uppercase; color: #9a3412; }
+  a { color: #0369a1; text-decoration: none; }
+  .foot { margin-top: 22px; padding-top: 8px; border-top: 1px solid #e5e7eb; color: #6b7280; font-size: 9px; }
+  .sign td { height: 30px; border-bottom: 1px solid #6b7280; }
+</style>
+</head>
+<body>
+<div class="page">
+  <?
+    var mk = function (m) { return m === 'ok' ? '✓' : m === 'nok' ? '✗' : m === 'na' ? '–' : m === 'pend' ? '·' : ''; };
+    var p = model.progress;
+    var h = model.headline;
+  ?>
+  <div class="bar"></div>
+  <div class="brand"><?= model.marca ?></div>
+  <h1><?= model.titulo ?> <span class="sub">· <?= model.pov.cliente ?></span></h1>
+  <div class="meta"><b>PoV:</b> <?= model.pov.titulo ?><? if (model.pov.oportunidade) { ?> &nbsp;·&nbsp; <b>Oportunidade:</b> <?= model.pov.oportunidade ?><? } ?></div>
+  <div class="meta"><? if (model.pov.periodo) { ?><b>Período:</b> <?= model.pov.periodo ?> &nbsp;·&nbsp; <? } ?><b>Status:</b> <?= model.pov.status_label ?><? if (model.pov.ambiente) { ?> &nbsp;·&nbsp; <b>Ambiente:</b> <?= model.pov.ambiente ?><? } ?></div>
+  <div class="meta"><b>Responsável:</b> <?= model.pov.responsavel || '—' ?><? if (model.pov.equipe) { ?> &nbsp;·&nbsp; <b>Equipe:</b> <?= model.pov.equipe ?><? } ?><? if (model.pov.contato_cliente) { ?> &nbsp;·&nbsp; <b>Contato no cliente:</b> <?= model.pov.contato_cliente ?><? } ?></div>
+  <? if (model.pov.plano_aceite) { ?><div class="meta"><? if (model.pov.plano_aceite.sem_aceite) { ?><b>Execução iniciada em</b> <?= model.pov.plano_aceite.em ?> sem aceite formal do plano<? } else { ?><b>Plano aceito em</b> <?= model.pov.plano_aceite.em ?> por <?= model.pov.plano_aceite.por ?><? } ?><? if (model.pov.plano_aceite.obs) { ?> — <?= model.pov.plano_aceite.obs ?><? } ?></div><? } ?>
+  <? if (model.pov.desfecho_label) { ?><div class="meta"><b>Desfecho (interno):</b> <?= model.pov.desfecho_label ?><? if (model.pov.competidor) { ?> · contra <?= model.pov.competidor ?><? } ?></div><? } ?>
+  <div class="meta"><b>Gerado em:</b> <?= model.gerado.data ?> por <?= model.gerado.autor ?></div>
+
+  <? if (model.pov.objetivo) { ?>
+  <h2>Objetivo da PoV</h2>
+  <div class="box pre"><?= model.pov.objetivo ?></div>
+  <? } ?>
+
+  <? if (model.pov.resumo_executivo) { ?>
+  <h2>Resumo executivo</h2>
+  <div class="box pre"><?= model.pov.resumo_executivo ?></div>
+  <? } ?>
+
+  <? if (model.criterios.length) { ?>
+  <h2>Critérios de sucesso</h2>
+  <? if (!model.plano) { ?>
+  <div class="headline"><? if (h.obrigatorios) { ?><b><?= h.obrigatorios_atendidos ?> de <?= h.obrigatorios ?></b> critérios obrigatórios atendidos<? } else { ?><b><?= h.atendidos ?> de <?= h.total ?></b> critérios atendidos<? } ?><? if (h.obrigatorios && h.total > h.obrigatorios) { ?> &nbsp;·&nbsp; <?= h.atendidos ?> de <?= h.total ?> no total<? } ?></div>
+  <? } ?>
+  <table>
+    <tr><th style="width:6%">#</th><th>Critério</th><th style="width:12%">Peso</th><? if (!model.plano) { ?><th style="width:17%">Situação</th><? } ?><th style="width:32%">Casos vinculados</th></tr>
+    <? model.criterios.forEach(function (c) { ?>
+    <tr>
+      <td>C<?= c.n ?></td>
+      <td class="pre"><?= c.texto ?><? if (c.manual && c.justificativa) { ?><br><span class="obs">Veredito definido pelo responsável: <?= c.justificativa ?></span><? } ?></td>
+      <td><?= c.peso_label ?></td>
+      <? if (!model.plano) { ?><td class="v-<?= c.veredito ?>"><b><?= c.veredito_label ?></b></td><? } ?>
+      <td class="small"><?= c.casos.join('; ') || '—' ?></td>
+    </tr>
+    <? }); ?>
+  </table>
+  <? if (model.avisos_rastreabilidade.criterios_sem_casos.length || model.avisos_rastreabilidade.casos_sem_criterio.length) { ?>
+  <div class="flag">Rastreabilidade (interno): <?= model.avisos_rastreabilidade.criterios_sem_casos.length ?> critério(s) sem caso vinculado · <?= model.avisos_rastreabilidade.casos_sem_criterio.length ?> caso(s) sem critério.</div>
+  <? } ?>
+  <? } ?>
+
+  <h2><?= model.plano ? 'Escopo' : 'Progresso' ?></h2>
+  <div>
+    <div class="stat"><div class="v"><?= p.total ?></div><div class="l">casos</div></div>
+    <div class="stat"><div class="v"><?= model.use_cases.length ?></div><div class="l">use cases</div></div>
+    <? if (!model.plano) { ?>
+    <div class="stat"><div class="v"><?= p.pct_concluido ?>%</div><div class="l">concluído</div></div>
+    <div class="stat"><div class="v"><?= p.aprovados ?></div><div class="l">aprovados</div></div>
+    <div class="stat"><div class="v"><?= p.parciais ?></div><div class="l">parciais</div></div>
+    <div class="stat"><div class="v"><?= p.reprovados ?></div><div class="l">reprovados</div></div>
+    <div class="stat"><div class="v"><?= p.bloqueados ?></div><div class="l">bloqueados</div></div>
+    <div class="stat"><div class="v"><?= p.nao_aplicaveis ?></div><div class="l">não aplicáveis</div></div>
+    <? if (p.aprovados_apos_reteste) { ?><div class="stat"><div class="v"><?= p.aprovados_apos_reteste ?></div><div class="l">aprovados após re-teste</div></div><? } ?>
+    <? } ?>
+  </div>
+  <table>
+    <? if (!model.plano) { ?>
+    <tr><th>Use case</th><th class="num" style="width:9%">Casos</th><th class="num" style="width:11%">Concluídos</th><th class="num" style="width:11%">Aprovados</th><th class="num" style="width:10%">Parciais</th><th class="num" style="width:11%">Reprovados</th><th class="num" style="width:11%">Bloqueados</th></tr>
+    <? model.por_use_case.forEach(function (u) { ?>
+    <tr><td><?= u.name ?></td><td class="num"><?= u.total ?></td><td class="num"><?= u.concluidos ?></td><td class="num"><?= u.aprovados ?></td><td class="num"><?= u.parciais ?></td><td class="num"><?= u.reprovados ?></td><td class="num"><?= u.bloqueados ?></td></tr>
+    <? }); ?>
+    <? } else { ?>
+    <tr><th>Use case</th><th class="num" style="width:12%">Casos</th><th class="num" style="width:16%">Prioridade alta</th><th class="num" style="width:12%">Média</th><th class="num" style="width:12%">Baixa</th></tr>
+    <? model.por_use_case.forEach(function (u) { ?>
+    <tr><td><?= u.name ?></td><td class="num"><?= u.total ?></td><td class="num"><?= u.alta ?></td><td class="num"><?= u.media ?></td><td class="num"><?= u.baixa ?></td></tr>
+    <? }); ?>
+    <? } ?>
+  </table>
+
+  <? if (model.pendencias.length) { ?>
+  <h2><?= model.plano ? 'Pré-requisitos e pendências' : 'Pendências' ?></h2>
+  <table>
+    <tr><th>O que falta</th><th style="width:20%">Responsável</th><th style="width:12%">Prazo</th><th style="width:12%">Situação</th><th style="width:24%">Casos afetados</th></tr>
+    <? model.pendencias.forEach(function (x) { ?>
+    <tr><td class="pre"><?= x.descricao ?><? if (x.resolucao) { ?><br><span class="obs"><?= x.resolucao ?></span><? } ?></td><td><?= x.responsavel_label ?><? if (x.responsavel_nome) { ?> — <?= x.responsavel_nome ?><? } ?></td><td><?= x.prazo ? x.prazo.split('-').reverse().join('/') : '—' ?><? if (x.atrasada) { ?> <span class="flag">atrasada</span><? } ?></td><td><?= x.status === 'aberta' ? 'Aberta' : 'Resolvida' ?></td><td class="small"><?= x.casos.join('; ') || '—' ?></td></tr>
+    <? }); ?>
+  </table>
+  <? } ?>
+
+  <? if (model.agenda.length) { ?>
+  <h2><?= model.plano ? 'Agenda' : 'Próximas execuções' ?></h2>
+  <table>
+    <tr><th style="width:14%">Data</th><th>Caso</th><th style="width:24%">Use case</th><th style="width:20%">Responsável</th></tr>
+    <? model.agenda.forEach(function (d) { d.itens.forEach(function (x, i) { ?>
+    <tr><td><?= i === 0 ? d.data : '' ?></td><td>#<?= x.n ?> <?= x.name ?></td><td class="muted"><?= x.use_case ?></td><td><?= x.responsavel || '—' ?></td></tr>
+    <? }); }); ?>
+  </table>
+  <? } ?>
+
+  <h2><?= model.plano ? 'Casos de teste' : 'Resultados por caso' ?></h2>
+  <? if (!model.casos.length) { ?><p class="muted">Nenhum caso no plano.</p><? } else { ?>
+  <table>
+    <tr><th style="width:5%">#</th><th>Caso</th><th style="width:18%">Use case</th>
+      <? if (model.plano) { ?><th style="width:9%">Prior.</th><th style="width:15%">Responsável</th><th style="width:10%">Data</th><th style="width:9%">Critérios</th>
+      <? } else { ?><th style="width:12%">Status</th><th style="width:16%">Checklist</th><th style="width:9%">Critérios</th><th style="width:10%">Data</th><? } ?></tr>
+    <? model.casos.forEach(function (c) { ?>
+    <tr>
+      <td><?= c.n ?></td>
+      <td><?= c.name ?><? if (c.custom) { ?> <span class="tag">definido com o cliente</span><? } ?><? if (c.name_en) { ?><br><span class="en"><?= c.name_en ?></span><? } ?></td>
+      <td class="muted"><?= c.use_case ?></td>
+      <? if (model.plano) { ?>
+      <td><?= c.prioridade_label ?></td><td><?= c.responsavel || '—' ?></td><td><?= c.data_prevista || '—' ?></td><td><?= c.criterios || '—' ?></td>
+      <? } else { ?>
+      <td><span class="st <?= c.status ?>"><?= c.status_label ?></span></td><td class="small"><?= c.resumo_checklist ?></td><td><?= c.criterios || '—' ?></td><td><?= c.data || '—' ?></td>
+      <? } ?>
+    </tr>
+    <? }); ?>
+  </table>
+  <? } ?>
+
+  <? if (model.escopo.incluidos.length || model.escopo.removidos.length) { ?>
+  <h2>Mudanças de escopo desde o plano aceito</h2>
+  <table>
+    <tr><th style="width:14%">Mudança</th><th>Caso</th><th style="width:34%">Motivo</th><th style="width:14%">Último status</th></tr>
+    <? model.escopo.incluidos.forEach(function (x) { ?><tr><td>Incluído</td><td><?= x.caso ?></td><td class="pre"><?= x.motivo ?></td><td><?= x.status_label ?></td></tr><? }); ?>
+    <? model.escopo.removidos.forEach(function (x) { ?><tr><td>Removido</td><td><?= x.caso ?></td><td class="pre"><?= x.motivo ?></td><td><?= x.status_label ?></td></tr><? }); ?>
+  </table>
+  <? } ?>
+
+  <? if (model.pov.proximos_passos) { ?>
+  <h2>Próximos passos</h2>
+  <div class="box pre"><?= model.pov.proximos_passos ?></div>
+  <? } ?>
+
+  <? if (model.detalhe && model.casos.length) { ?>
+  <h2>Detalhamento</h2>
+  <? model.casos.forEach(function (c) { ?>
+  <div class="case <?= model.plano ? '' : c.status ?>">
+    <? if (model.interno) { ?><div class="brand">Uso interno</div><? } ?>
+    <h3><?= c.n ?>. <?= c.name ?><? if (!model.plano) { ?> &nbsp;<span class="st <?= c.status ?>"><?= c.status_label ?></span><? } ?></h3>
+    <? if (c.name_en) { ?><div class="en"><?= c.name_en ?></div><? } ?>
+    <div class="muted"><?= c.use_case ?> · prioridade <?= c.prioridade_label ?><? if (c.responsavel) { ?> · responsável <?= c.responsavel ?><? } ?><? if (c.data_prevista) { ?> · previsto para <?= c.data_prevista ?><? } ?><? if (c.criterios) { ?> · critérios <?= c.criterios ?><? } ?><? if (c.custom) { ?> · <span class="tag">definido com o cliente</span><? } ?></div>
+    <? if (c.lifecycle_label || c.lab || c.versao) { ?><div class="muted small"><? if (c.lifecycle_label) { ?>Biblioteca: <?= c.lifecycle_label ?> · <? } ?><? if (c.versao) { ?><?= c.versao ?> · <? } ?><? if (c.lab) { ?>laboratório: <?= c.lab ?><? } ?></div><? } ?>
+    <? if (c.translation_pending) { ?><div class="flag">tradução pendente — texto original em inglês</div><? } ?>
+    <? if (c.caso_alterado) { ?><div class="flag">o caso mudou na biblioteca depois de entrar no plano</div><? } ?>
+    <? if (c.orfao) { ?><div class="flag">caso removido da biblioteca — texto da última versão importada</div><? } ?>
+    <? if (c.reteste) { ?><div class="flag"><?= c.reteste ?></div><? } ?>
+    <? if (c.summary) { ?><div class="k">Resumo</div><div class="pre"><?= c.summary ?></div><? } ?>
+    <? if (c.description) { ?><div class="k">Descrição</div><div class="pre"><?= c.description ?></div><? } ?>
+    <? if (c.escopo_cliente) { ?><div class="k">Como será executado neste cliente</div><div class="pre"><?= c.escopo_cliente ?></div><? } ?>
+    <? if (c.prereqs.length) { ?><div class="k">Pré-requisitos</div><ul class="cl"><? c.prereqs.forEach(function (x) { ?><li><? if (x.mark) { ?><span class="m <?= x.mark ?>"><?= mk(x.mark) ?> <?= x.mark_label ?></span> — <? } ?><?= x.text ?><? if (x.description) { ?> <span class="muted">(<?= x.description ?>)</span><? } ?><? if (x.obs) { ?> <span class="obs">— <?= x.obs ?></span><? } ?></li><? }); ?></ul><? } ?>
+    <? if (c.steps.length) { ?><div class="k">Objetivos e passos</div><ul class="cl"><? c.steps.forEach(function (x) { ?><? if (x.header) { ?><li class="h"><?= x.text ?></li><? } else { ?><li><? if (x.mark) { ?><span class="m <?= x.mark ?>"><?= mk(x.mark) ?> <?= x.mark_label ?></span> — <? } ?><span class="pre"><?= x.text ?></span><? if (x.obs) { ?> <span class="obs">— <?= x.obs ?></span><? } ?></li><? } ?><? }); ?></ul><? } ?>
+    <? if (c.aceite) { ?><div class="k">Resultado esperado<? if (c.aceite.mark) { ?> — <span class="m <?= c.aceite.mark ?>"><?= mk(c.aceite.mark) ?> <?= c.aceite.mark_label ?></span><? } ?></div><div class="pre"><?= c.aceite.text ?></div><? if (c.aceite.obs) { ?><div class="obs pre">Observado: <?= c.aceite.obs ?></div><? } ?><? } ?>
+    <? if (c.metricas.length) { ?><div class="k">Métricas de avaliação</div><table><tr><th>Métrica</th><th style="width:34%">Medido</th><th style="width:22%">Avaliação</th></tr><? c.metricas.forEach(function (x) { ?><tr><td><?= x.text ?></td><td><?= x.valor || '—' ?></td><td><? if (x.mark) { ?><span class="m <?= x.mark ?>"><?= mk(x.mark) ?> <?= x.mark_label ?></span><? } else { ?>—<? } ?></td></tr><? }); ?></table><? } ?>
+    <? if (c.how_to) { ?><div class="k">Como testar</div><div class="pre"><?= c.how_to ?></div><? } ?>
+    <? if (c.resultado_obtido) { ?><div class="k">Resultado obtido</div><div class="pre"><?= c.resultado_obtido ?></div><? } ?>
+    <? if (c.evidencias.length) { ?><div class="k">Evidências</div><div class="url"><? c.evidencias.forEach(function (e, i) { ?><? if (i) { ?> · <? } ?><a href="<?= e.url ?>"><?= e.label ?></a><? }); ?></div><? } ?>
+    <? if (c.evidencias_internas) { ?><div class="muted small"><?= c.evidencias_internas ?> evidência(s) interna(s) não listada(s).</div><? } ?>
+    <? if (c.testemunha || c.ambiente || c.executado_por) { ?><div class="k">Execução</div><div><?= [c.executado_por ? 'Executado por ' + c.executado_por : '', c.ambiente ? 'Ambiente: ' + c.ambiente : '', c.testemunha ? 'Testemunha do cliente: ' + c.testemunha : ''].filter(function (s) { return s; }).join(' · ') ?></div><? } ?>
+    <? if (c.docs.length) { ?><div class="k">Documentação</div><div class="url"><? c.docs.forEach(function (d, i) { ?><? if (i) { ?> · <? } ?><a href="<?= d.url ?>"><?= d.label ?></a><? }); ?></div><? } ?>
+    <? if (c.causa || c.referencia) { ?><div class="k">Causa / referência (interno)</div><div><?= c.causa ?><? if (c.referencia) { ?> · <?= c.referencia ?><? } ?></div><? } ?>
+    <? if (c.tentativas.length > 1) { ?><div class="k">Tentativas (interno)</div><ul class="cl"><? c.tentativas.forEach(function (t) { ?><li>#<?= t.n ?> <?= t.status_label ?> em <?= t.em ?><? if (t.causa) { ?> · causa: <?= t.causa ?><? } ?><? if (t.referencia) { ?> · <?= t.referencia ?><? } ?></li><? }); ?></ul><? } ?>
+    <? if (c.removidos.length) { ?><div class="k">Itens avaliados que saíram da biblioteca (interno)</div><ul class="cl"><? c.removidos.forEach(function (x) { ?><li><span class="m <?= x.mark ?>"><?= mk(x.mark) ?></span> <?= x.text ?><? if (x.obs) { ?> <span class="obs">— <?= x.obs ?></span><? } ?></li><? }); ?></ul><? } ?>
+    <? if (c.value_drivers.length) { ?><div class="k">Value drivers</div><div><?= c.value_drivers.join(' · ') ?></div><? } ?>
+    <? if (c.competitors.length) { ?><div class="k">Posicionamento oficial (biblioteca)</div><div><? c.competitors.forEach(function (x, i) { ?><? if (i) { ?> · <? } ?><?= x.name ?>: <?= x.stance_label ?><? if (x.note) { ?> (<?= x.note ?>)<? } ?><? }); ?></div><? } ?>
+    <? if (c.notes.length) { ?><div class="k">Notas da biblioteca</div><div class="pre"><?= c.notes.join('\n') ?></div><? } ?>
+    <? if (c.observacoes) { ?><div class="k">Observações internas</div><div class="pre"><?= c.observacoes ?></div><? } ?>
+    <? if (c.url) { ?><div class="k">Fonte</div><div class="url"><a href="<?= c.url ?>"><?= c.url ?></a></div><? } ?>
+  </div>
+  <? }); ?>
+  <? } ?>
+
+  <? if (model.resultados) { ?>
+  <h2>Aceite do resultado</h2>
+  <? if (model.pov.resultado_aceite) { ?>
+  <div class="box"><? if (model.pov.resultado_aceite.sem_aceite) { ?>PoV encerrada em <?= model.pov.resultado_aceite.em ?> sem aceite formal do resultado<? } else { ?>Resultado aceito em <?= model.pov.resultado_aceite.em ?> por <?= model.pov.resultado_aceite.por ?><? } ?><? if (model.pov.resultado_aceite.obs) { ?> — <?= model.pov.resultado_aceite.obs ?><? } ?>.</div>
+  <? } ?>
+  <? if (!model.interno) { ?>
+  <table class="sign">
+    <tr><th style="width:36%">Nome e cargo</th><th style="width:30%">Organização</th><th>Data e assinatura</th></tr>
+    <tr><td></td><td><?= model.pov.cliente ?></td><td></td></tr>
+    <tr><td></td><td>Palo Alto Networks</td><td></td></tr>
+  </table>
+  <? } ?>
+  <? } ?>
+
+  <div class="foot">
+    <? if (model.interno) { ?>Origem dos casos: POV Companion Test Case Library<? if (model.library.export_date) { ?>, export de <?= model.library.export_date ?><? } ?><? if (model.library.translation_date) { ?>, tradução pt-BR de <?= model.library.translation_date ?><? } ?>. Textos dos casos são literais da biblioteca; casos marcados "definido com o cliente" foram escritos para esta PoV.<? } else { ?>Casos de teste da biblioteca de provas de valor da Palo Alto Networks e casos definidos com <?= model.pov.cliente ?>.<? } ?>
+    Gerado por <?= model.gerado.autor ?> em <?= model.gerado.data ?> com o PoV Runner. <?= model.marca ?>.
+  </div>
+</div>
+</body>
+</html>
